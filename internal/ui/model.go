@@ -44,7 +44,6 @@ type Model struct {
 
 	Suggest    []protocol.Command // slash commands completing the prompt, shown above it
 	SuggestSel int                // highlighted one
-	Toasts     []Toast            // notices in the corner of the IDE, oldest first
 	Away       bool               // the terminal lost the focus: what needs the user is announced
 	StartModel string             // the model claude starts with as args or settings name it ("opus"), shown until a turn tells
 
@@ -116,6 +115,7 @@ type ChatEntry struct {
 	Text   string
 	Queued bool      // a prompt typed while claude works, drawn under the chat until it goes to claude
 	Cut    bool      // a prompt whose turn the user interrupted: red, a ✗ for its arrow
+	Answer bool      // the user's answer to a question of a popup, drawn right under it
 	At     time.Time // when it was said, shown grey at the right; zero for not known
 }
 
@@ -237,7 +237,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.pluginChanged(msg)
 	case exportedMsg:
 		if msg.err != nil {
-			m.toast(ToastErr, -1, "/export: %v", msg.err)
+			m.local("Error: /export: " + msg.err.Error())
 		} else {
 			m.local("Exported to " + msg.path)
 		}
@@ -298,11 +298,10 @@ func (m *Model) tickInterval() time.Duration {
 	return tickIdle
 }
 
-// animating reports whether something on screen moves by itself: a toast, a wipe, a popup
-// dropping in.
+// animating reports whether something on screen moves by itself: a wipe, a popup dropping in.
 func (m *Model) animating() bool {
 	cut := ideview.Cutting(m.Sim.State(), m.Now)
-	return len(m.Toasts) > 0 || cut || !m.popupAt.IsZero() && m.Now.Sub(m.popupAt) < drawPopupDrop
+	return cut || !m.popupAt.IsZero() && m.Now.Sub(m.popupAt) < drawPopupDrop
 }
 
 func (m *Model) nextTick() tea.Cmd {
@@ -347,7 +346,7 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			m.btwAnswered(ev.RequestID, ev.Message, true)
 			break
 		}
-		m.toast(ToastErr, -1, "%s", ev.Message)
+		m.local("Error: " + ev.Message)
 	case protocol.Commands:
 		m.addCommands(ev.List)
 		m.cli.models, m.cli.outputStyles, m.cli.account = ev.Models, ev.OutputStyles, ev.Account
@@ -430,20 +429,19 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			m.windows = map[string]int{}
 		}
 		maps.Copy(m.windows, ev.ContextWindows)
-		if n := len(m.Chat); ev.IsError && !interrupted && !(n > 0 && strings.TrimSpace(m.Chat[n-1].Text) == strings.TrimSpace(ev.Text)) {
-			m.toast(ToastErr, -1, "%s", ev.Text) // unless the CLI said it in the conversation already
+		if n := len(m.Chat); ev.IsError && strings.TrimSpace(ev.Text) != "" && !interrupted && !(n > 0 && strings.TrimSpace(m.Chat[n-1].Text) == strings.TrimSpace(ev.Text)) {
+			m.local(ev.Text) // unless the CLI said it in the conversation already
 		}
 		if len(m.pending) > 0 { // claude goes on with what was typed meanwhile: it is not done
 			m.notice = ""
 			m.flush()
 		}
 	case protocol.Stderr:
-		m.toast(ToastErr, -1, "%s", ev.Line)
 		m.stderr = append(m.stderr[max(0, len(m.stderr)-maxStderr+1):], ev.Line)
 	case protocol.Exited:
 		first := m.Status.State != "exited"
 		m.Status.State, m.Status.Busy = "exited", false
-		// The toasts go; the reason stays in the conversation.
+		// The reason stays in the conversation.
 		report := "claude exited"
 		if ev.Err != nil {
 			report = "Error: claude exited (" + ev.Err.Error() + ")"
@@ -460,12 +458,6 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		// Nobody is left to answer the popups or to finish the tool calls: end their scenes.
 		m.Popup, m.queue = nil, nil
 		m.exited(now)
-		// Last, so the agents' toasts do not push it out.
-		if ev.Err != nil {
-			m.toast(ToastErr, -1, "claude exited: %v", ev.Err)
-		} else {
-			m.toast(ToastErr, -1, "claude exited")
-		}
 	}
 }
 
@@ -686,7 +678,7 @@ func (m *Model) prompt(text string) tea.Cmd {
 	}
 	m.unknown = ""
 	if m.Status.State == "exited" {
-		m.toast(ToastErr, -1, "claude has exited: prompts are not sent")
+		m.local("Error: claude has exited: prompts are not sent")
 		return nil
 	}
 	if m.Status.Busy && !m.Status.Replay { // it joins the chat once it goes to claude
@@ -697,7 +689,7 @@ func (m *Model) prompt(text string) tea.Cmd {
 		m.Chat = append(m.Chat, ChatEntry{Kind: UserEntry, Text: text, At: m.clock()})
 	}
 	if m.Status.Replay {
-		m.toast(ToastInfo, -1, "replay: prompts are not sent")
+		m.local("replay: prompts are not sent")
 		return nil
 	}
 	m.send(m.message(text))

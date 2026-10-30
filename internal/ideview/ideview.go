@@ -40,7 +40,7 @@ func Render(st *ide.State, o Options, width, height int) string {
 		return ""
 	}
 	cam := camera(st)
-	ew := leftWidth(width, o)
+	ew := leftWidth(width)
 	rw := width - ew
 	var left []string
 	if o.Panel == Agents {
@@ -69,19 +69,15 @@ func Render(st *ide.State, o Options, width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-// leftWidth is the width of the left column: names, actions and times of agents need more room
-// than file names.
-func leftWidth(width int, o Options) int {
-	if o.Panel == Agents {
-		return min(max(width*3/10, 24), 44, width/2)
-	}
+// leftWidth is the width of the left column, the same for the files and the agents panels.
+func leftWidth(width int) int {
 	return min(max(width/5, 18), 32, width/2)
 }
 
 // AgentAt is the agent a click at cell (x, y) of Render(st, o, width, height) falls on: a row of
 // the agents panel, or the workplace of an agent on the right; "" for none.
 func AgentAt(st *ide.State, o Options, width, height, x, y int) string {
-	ew := leftWidth(width, o)
+	ew := leftWidth(width)
 	switch {
 	case y < 0 || y >= height || x < 0 || x >= width:
 		return ""
@@ -104,7 +100,7 @@ func AgentAt(st *ide.State, o Options, width, height, x, y int) string {
 // TreeAt is the explorer row a click at cell (x, y) of Render(st, o, width, height) falls on: its
 // path, "" for none, and whether it is a folder.
 func TreeAt(st *ide.State, o Options, width, height, x, y int) (path string, dir bool) {
-	if o.Panel != Files || x < 0 || x >= leftWidth(width, o) || y < 1 || y >= height-1 {
+	if o.Panel != Files || x < 0 || x >= leftWidth(width) || y < 1 || y >= height-1 {
 		return "", false
 	}
 	_, ih := inner(0, height)
@@ -118,7 +114,7 @@ func TreeAt(st *ide.State, o Options, width, height, x, y int) (path string, dir
 // its frame, less the editor's line numbers and the air of a terminal, a browser or the agents
 // panel. It is empty where there is no text: on a frame, in the gutter, in an empty editor.
 func TextAt(st *ide.State, o Options, width, height, x, y int) image.Rectangle {
-	ew := leftWidth(width, o)
+	ew := leftWidth(width)
 	x0, w := 1, ew-2 // the explorer
 	if o.Panel == Agents {
 		x0, w = 2, textWidth(ew-2)

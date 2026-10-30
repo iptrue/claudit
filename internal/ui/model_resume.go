@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -28,16 +29,16 @@ type historyMsg struct {
 	err     error
 }
 
-// resumable reports whether claude can be restarted in another conversation now; a toast says
+// resumable reports whether claude can be restarted in another conversation now; the chat says
 // why not.
 func (m *Model) resumable() bool {
 	switch {
 	case m.Status.Replay:
-		m.toast(ToastInfo, -1, "replay: /resume is not available")
+		m.local("replay: /resume is not available")
 	case m.Status.State == "exited":
-		m.toast(ToastErr, -1, "claude has exited: nothing to resume")
+		m.local("Error: claude has exited: nothing to resume")
 	case m.Status.Busy:
-		m.toast(ToastInfo, -1, "/resume: claude is working, esc interrupts it")
+		m.local("/resume: claude is working, esc interrupts it")
 	default:
 		return true
 	}
@@ -60,7 +61,7 @@ func (m *Model) resume(query string) tea.Cmd {
 // listed lists the conversations to resume in a popup, or resumes the one query names.
 func (m *Model) listed(msg sessionsMsg) tea.Cmd {
 	if msg.err != nil {
-		m.toast(ToastErr, -1, "/resume: %v", msg.err)
+		m.local("Error: /resume: " + msg.err.Error())
 		return nil
 	}
 	q := strings.ToLower(msg.query)
@@ -69,11 +70,11 @@ func (m *Model) listed(msg sessionsMsg) tea.Cmd {
 	})
 	switch {
 	case m.Popup != nil: // claude asked meanwhile: its question goes first
-		m.toast(ToastInfo, -1, "/resume: answer claude first")
+		m.local("/resume: answer claude first")
 	case len(list) == 0 && q != "":
-		m.toast(ToastInfo, -1, "/resume: no conversation matches %q", msg.query)
+		m.local(fmt.Sprintf("/resume: no conversation matches %q", msg.query))
 	case len(list) == 0:
-		m.toast(ToastInfo, -1, "/resume: no other conversation in this project")
+		m.local("/resume: no other conversation in this project")
 	case len(list) == 1 && q != "":
 		return m.pick(list[0])
 	default:
@@ -124,7 +125,7 @@ var entryKinds = [...]EntryKind{sessions.Prompt: UserEntry, sessions.Reply: Assi
 // resumed restarts claude in the conversation picked, with what was said in it in the chat.
 func (m *Model) resumed(msg historyMsg) {
 	if msg.err != nil {
-		m.toast(ToastErr, -1, "/resume: %v", msg.err)
+		m.local("Error: /resume: " + msg.err.Error())
 		return
 	}
 	if !m.resumable() {

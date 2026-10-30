@@ -125,14 +125,6 @@ func firstLineOf(s string) string {
 	return line
 }
 
-func clipRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
-}
-
 // jsonText renders v as JSON without HTML escaping; indent "" means compact.
 func jsonText(v any, indent string) string {
 	var b strings.Builder

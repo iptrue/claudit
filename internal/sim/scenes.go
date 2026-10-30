@@ -34,6 +34,7 @@ const (
 	click      = 80 * time.Millisecond  // open the file picked in the explorer
 	pause      = 350 * time.Millisecond // look at the selection before deleting it
 	enterPause = 150 * time.Millisecond // look at the command before pressing enter
+	pagePause  = time.Second            // look at the page that came before moving on
 	spinFrame  = 80 * time.Millisecond
 
 	maxOutput = 40   // lines printed for search tools
@@ -138,6 +139,7 @@ func (s *Sim) browse(sc *scene, address string, search bool) {
 		sc.score = scoreShell
 		sc.add(0, func() { p.LoadAt, p.Failed = time.Time{}, r.isErr })
 		sc.paced(len(lines), outLo, outHi, outCap, func(i, j int) { p.Lines = append(p.Lines, lines[i:j]...) })
+		sc.hold(pagePause)
 	})
 }
 

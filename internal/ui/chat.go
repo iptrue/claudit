@@ -65,18 +65,20 @@ func drawChatCount(cache *chatCache, entries []ChatEntry, width int) int {
 
 // drawChatLines are the lines of the conversation tw cells wide, and beside each the time its
 // entry was said when it is the entry's first and aw leaves room for it. A blank line sets the
-// user's prompts apart from what claude said before them; claude's caret stands in its place.
+// user's prompts apart from what claude said before them; claude's caret stands in its place. An
+// answer to a popup's question sticks to the question instead, and the blank line goes after it.
 func drawChatLines(cache *chatCache, entries []ChatEntry, tw, aw int) (lines, times []string) {
-	prev := UserEntry
+	prev := ChatEntry{Kind: UserEntry}
 	for i, e := range entries {
 		drawn := cache.draw(i, e, tw)
 		if len(drawn) == 0 {
 			continue
 		}
-		if e.Kind == UserEntry && prev != UserEntry && prev != CaretEntry && len(lines) > 0 {
+		prompt := e.Kind == UserEntry && !e.Answer && prev.Kind != UserEntry && prev.Kind != CaretEntry
+		if (prompt || prev.Answer) && len(lines) > 0 {
 			lines, times = append(lines, ""), append(times, "")
 		}
-		prev = e.Kind
+		prev = e
 		for j, l := range drawn {
 			at := ""
 			if j == 0 && aw > 0 && !e.At.IsZero() {
@@ -160,7 +162,7 @@ func drawEntry(e ChatEntry, w int) []string {
 		}
 		return lines
 	case CaretEntry:
-		return []string{" " + styleReply.Render(e.Text)} // under where claude's next words go
+		return []string{"  " + styleReply.Render(e.Text)} // under where claude's next words go
 	}
 	return nil
 }

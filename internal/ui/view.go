@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -78,9 +77,7 @@ func (m *Model) View() tea.View {
 				case dir:
 					m.Sim.Toggle(path)
 				case path != "":
-					if !m.Sim.View(path) {
-						m.toast(ToastInfo, -1, "%s is binary or unreadable", filepath.Base(path))
-					}
+					m.Sim.View(path)
 				}
 				return m.clickIDE(ideview.AgentAt(st, o, w, ideH, x, y))
 			},
@@ -113,7 +110,6 @@ func (m *Model) View() tea.View {
 	base := strings.Join(parts, "\n")
 
 	under := []*lipgloss.Layer{lipgloss.NewLayer(base)}
-	under = append(under, drawToasts(m.Toasts, m.Now, w, 1)...)
 	if len(m.Suggest) > 0 {
 		box := renderSuggest(m.Suggest, m.SuggestSel, strings.TrimPrefix(string(m.Input.Text), "/"), w-4)
 		y := max(0, ideH+chatH-lipgloss.Height(box))

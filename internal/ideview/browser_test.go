@@ -45,10 +45,10 @@ func TestBrowser(t *testing.T) {
 		t.Errorf("address bar %q", bar)
 	}
 
-	// While the page loads a light runs along the rule in the agent's colour.
+	// While the page loads a spinner turns a space after the address; the rule stays plain.
 	st.Agents[0].Page = ide.Page{URL: "https://go.dev/doc", LoadAt: now.Add(-100 * time.Millisecond)}
 	out = Render(st, Options{Now: now}, 100, 20)
-	if plain := ansi.Strip(out); !strings.Contains(plain, "│ https://go.dev/doc ") || !styled(out, "━", sgr("38", theme.Agents[0])) {
+	if plain := ansi.Strip(out); !strings.Contains(plain, "│ https://go.dev/doc "+spinFrame(now)+" ") || strings.Contains(plain, "━") {
 		t.Errorf("loading:\n%s", plain)
 	}
 

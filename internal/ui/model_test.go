@@ -119,7 +119,7 @@ func TestModelQuestionSingleSelect(t *testing.T) {
 		t.Errorf("popup %#v state %q after answer", m.Popup, m.Status.State)
 	}
 	// The question and its answer join the chat, as claude's words and the user's.
-	want := []ChatEntry{{Kind: AssistantEntry, Text: "Which function should I add to calc.py: mul or div?", At: modelT0}, {Kind: UserEntry, Text: "div", At: modelT0}}
+	want := []ChatEntry{{Kind: AssistantEntry, Text: "Which function should I add to calc.py: mul or div?", At: modelT0}, {Kind: UserEntry, Text: "div", At: modelT0, Answer: true}}
 	if !reflect.DeepEqual(m.Chat, want) {
 		t.Errorf("chat %+v", m.Chat)
 	}
@@ -468,7 +468,7 @@ func TestModelReplayDoesNotSendPrompts(t *testing.T) {
 	if len(*sent) != 0 {
 		t.Fatalf("replay sent %#v", *sent)
 	}
-	want := []ChatEntry{{Kind: UserEntry, Text: "Hi", At: modelT0}}
+	want := []ChatEntry{{Kind: UserEntry, Text: "Hi", At: modelT0}, {Kind: CommandEntry, Text: "replay: prompts are not sent", At: modelT0}}
 	if !reflect.DeepEqual(m.Chat, want) || m.Status.Busy {
 		t.Errorf("chat %#v busy %v", m.Chat, m.Status.Busy)
 	}
@@ -533,8 +533,8 @@ func TestModelPermissionMode(t *testing.T) {
 	if m.Status.Mode != "plan" {
 		t.Errorf("mode after refusal %q", m.Status.Mode)
 	}
-	if n := len(m.Toasts); n == 0 || m.Toasts[n-1].Text != "auto mode is unavailable" {
-		t.Errorf("toasts %+v", m.Toasts)
+	if n := len(m.Chat); n == 0 || m.Chat[n-1].Text != "Error: auto mode is unavailable" {
+		t.Errorf("chat %+v", m.Chat)
 	}
 	modelEvents(m, protocol.Init{Model: "m", PermissionMode: "bypassPermissions"})
 	if got := []string{m.Status.Mode, press(), press(), press(), press(), press()}; !slices.Equal(got,
@@ -562,8 +562,8 @@ func modelQuitsOn(m *Model, key string) bool {
 	return ok
 }
 
-// ctrl+c as in Claude Code: it clears the prompt, else interrupts the turn, else quits on the
-// second press while the toast asking for it shows.
+// ctrl+c as in Claude Code: it clears the prompt, else interrupts the turn, else quits on a
+// second press within quitWindow.
 func TestModelCtrlC(t *testing.T) {
 	m, sent := modelNew(t, false)
 	m.Input.insert("draft")
@@ -575,8 +575,8 @@ func TestModelCtrlC(t *testing.T) {
 		t.Fatalf("ctrl+c while busy: state %q, sent %v", m.Status.State, *sent)
 	}
 	m.Status.Busy = false
-	if modelQuits(m) || len(m.Toasts) != 1 || m.Toasts[0].Text != "press ctrl+c again to quit" {
-		t.Fatalf("first ctrl+c: toasts %+v", m.Toasts)
+	if modelQuits(m) {
+		t.Fatal("the first ctrl+c quit")
 	}
 	modelAt(m, quitWindow+time.Second)
 	if modelQuits(m) {
@@ -613,11 +613,11 @@ func TestModelEscQuits(t *testing.T) {
 		t.Fatal("esc quit while the turn was being interrupted")
 	}
 	m.Status.Busy = false
-	if modelQuitsOn(m, "esc") || len(m.Input.Text) != 0 || len(m.Toasts) != 0 {
-		t.Fatalf("esc with a draft: input %q, toasts %+v", string(m.Input.Text), m.Toasts)
+	if modelQuitsOn(m, "esc") || len(m.Input.Text) != 0 {
+		t.Fatalf("esc with a draft: input %q", string(m.Input.Text))
 	}
-	if modelQuitsOn(m, "esc") || len(m.Toasts) != 1 || m.Toasts[0].Text != "press esc again to quit" {
-		t.Fatalf("first esc: toasts %+v", m.Toasts)
+	if modelQuitsOn(m, "esc") {
+		t.Fatal("the first esc quit")
 	}
 	if modelQuits(m) || modelQuitsOn(m, "esc") {
 		t.Fatal("ctrl+c and esc mixed quit")
@@ -648,8 +648,8 @@ func TestModelInterrupt(t *testing.T) {
 		t.Errorf("esc dropped the draft: %q", string(m.Input.Text))
 	}
 	modelEvents(m, protocol.Result{IsError: true, Text: "[ede_diagnostic] result_type=user"})
-	if len(m.Chat) != 2 || m.Chat[0] != (ChatEntry{Kind: UserEntry, Text: "go", At: modelT0, Cut: true}) || len(m.Toasts) != 0 || m.Status.Busy {
-		t.Errorf("chat %+v toasts %+v busy %v", m.Chat, m.Toasts, m.Status.Busy)
+	if len(m.Chat) != 2 || m.Chat[0] != (ChatEntry{Kind: UserEntry, Text: "go", At: modelT0, Cut: true}) || m.Status.Busy {
+		t.Errorf("chat %+v busy %v", m.Chat, m.Status.Busy)
 	}
 	if got := drawEntry(m.Chat[0], 40); len(got) != 1 || got[0] != styleErr.Render("✗ go") {
 		t.Errorf("interrupted prompt drawn %q", got)
@@ -766,7 +766,7 @@ func TestModelLifecycleEvents(t *testing.T) {
 	)
 	// The reason claude exited stays in the chat, once, with what it wrote to stderr.
 	report := "claude exited (exit status 1)\n  warning: x"
-	if want := []ChatEntry{{Kind: CommandEntry, Text: "Error: " + report, At: modelT0}}; !reflect.DeepEqual(m.Chat, want) || m.ExitReport() != report {
+	if want := []ChatEntry{{Kind: CommandEntry, Text: "error_max_turns", At: modelT0}, {Kind: CommandEntry, Text: "Error: " + report, At: modelT0}}; !reflect.DeepEqual(m.Chat, want) || m.ExitReport() != report {
 		t.Errorf("chat %#v report %q", m.Chat, m.ExitReport())
 	}
 	if m.Status.State != "exited" || m.Status.Busy {
@@ -794,7 +794,6 @@ func TestModelExitEndsPendingTools(t *testing.T) {
 	for i := range 200 {
 		m.Update(tickMsg(t0.Add(time.Duration(200+i) * 16 * time.Millisecond)))
 	}
-	m.Update(tickMsg(m.Now.Add(toastLife))) // the "claude exited" toast fades out
 	if m.Sim.Busy() || main.Term.Running || m.tickInterval() != tickIdle {
 		t.Errorf("after exit: sim busy %v, running %v, tick %v", m.Sim.Busy(), main.Term.Running, m.tickInterval())
 	}
@@ -810,7 +809,8 @@ func TestModelExitEndsPendingTools(t *testing.T) {
 	if len(*sent) != 0 || m.Status.Busy || m.Status.State != "exited" {
 		t.Errorf("prompt after exit: sent %#v, status %+v", *sent, m.Status)
 	}
-	if want := []ChatEntry{{Kind: CommandEntry, Text: "Error: claude exited (signal: killed)", At: modelT0}}; !reflect.DeepEqual(m.Chat, want) {
+	want := []ChatEntry{{Kind: CommandEntry, Text: "Error: claude exited (signal: killed)", At: modelT0}, {Kind: CommandEntry, Text: "Error: claude has exited: prompts are not sent", At: modelT0}}
+	if !reflect.DeepEqual(m.Chat, want) {
 		t.Errorf("chat after exit %+v", m.Chat) // the prompt is not in it: it was never sent
 	}
 }

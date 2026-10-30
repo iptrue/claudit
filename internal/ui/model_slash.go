@@ -98,7 +98,7 @@ func (m *Model) slashCommand(text, cmd string) (done bool, run tea.Cmd) {
 	case cmd == "model" && args != "" && !m.Status.Replay && m.Status.State != "exited":
 		m.setModel(args)
 	case interactiveOnly[cmd] && !m.known[cmd]:
-		m.toast(ToastInfo, -1, "/%s runs only in the interactive claude: claude -p turns it down", cmd)
+		m.local("/" + cmd + " runs only in the interactive claude: claude -p turns it down")
 	case len(m.known) > 0 && !m.known[cmd] && !strings.Contains(cmd, "/") && m.unknown != text:
 		// claude -p would hand an unknown command to the model as a prompt: a paid turn for a typo.
 		// A path such as "/tmp/x what is this" is a prompt, not a command.
@@ -108,7 +108,7 @@ func (m *Model) slashCommand(text, cmd string) (done bool, run tea.Cmd) {
 		if near := m.nearest(cmd); near != "" {
 			hint = " · /" + near + "?"
 		}
-		m.toast(ToastErr, -1, "unknown command /%s%s · enter again to send it anyway", cmd, hint)
+		m.local("Error: unknown command /" + cmd + hint + " · enter again to send it anyway")
 	default:
 		return false, nil
 	}

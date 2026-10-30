@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -22,11 +23,6 @@ func (m *Model) globalKey(key string) bool {
 		m.cycleMode()
 	case key == "alt+z":
 		m.Wrap = !m.Wrap
-		if m.Wrap {
-			m.toast(ToastInfo, -1, "word wrap on")
-		} else {
-			m.toast(ToastInfo, -1, "word wrap off")
-		}
 	case key == "tab":
 		if m.PanelFocus {
 			m.PanelFocus = false
@@ -112,9 +108,8 @@ func (m *Model) pinSelected() {
 	m.Sim.Pin(a.Key)
 }
 
-// quitWindow is how soon a second ctrl+c or esc must follow the first to quit: as long as the
-// toast asking for it shows.
-const quitWindow = toastLife
+// quitWindow is how soon a second ctrl+c or esc must follow the first to quit.
+const quitWindow = 4 * time.Second
 
 // ctrlC does what ctrl+c does in Claude Code: it clears the prompt, else interrupts the turn,
 // else quits — on a second press, so that a stray one costs nothing.
@@ -132,15 +127,14 @@ func (m *Model) ctrlC() tea.Cmd {
 	return nil
 }
 
-// quitTwice quits on a second press of key within quitWindow; the first one asks for it. The
-// keys do not mix: esc after ctrl+c is a change of mind, not a confirmation.
+// quitTwice quits on a second press of key within quitWindow. The keys do not mix: esc after
+// ctrl+c is a change of mind, not a confirmation.
 func (m *Model) quitTwice(key string) tea.Cmd {
 	now := m.clock()
 	if m.quitKey == key && now.Sub(m.quitAt) < quitWindow {
 		return tea.Quit
 	}
 	m.quitAt, m.quitKey = now, key
-	m.toast(ToastInfo, -1, "press %s again to quit", key)
 	return nil
 }
 

@@ -71,7 +71,7 @@ type pluginChangedMsg struct {
 // openPlugins runs /plugins: the manager comes up and reads the lists.
 func (m *Model) openPlugins() tea.Cmd {
 	if m.Status.Replay { // the plugins are the user's own, not the recording's
-		m.toast(ToastInfo, -1, "replay: /plugins is not available")
+		m.local("replay: /plugins is not available")
 		return nil
 	}
 	m.Popup = &PluginsPopup{Loading: true}
@@ -92,7 +92,7 @@ func (m *Model) pluginsRead(msg pluginsMsg) {
 	switch {
 	case !ok:
 	case msg.err != nil:
-		m.toast(ToastErr, -1, "/plugins: %v", msg.err)
+		m.local("Error: /plugins: " + msg.err.Error())
 		p.Busy, p.Doing = "", ""
 		if p.Loading { // nothing to show
 			m.closeResume()
@@ -158,11 +158,11 @@ func (m *Model) changePlugin(p *PluginsPopup, id, doing string, args ...string) 
 }
 
 // pluginChanged puts what `claude plugin` did in the chat, has claude reload the plugins and the
-// manager read the lists again; what it refused is a toast.
+// manager read the lists again; what it refused too.
 func (m *Model) pluginChanged(msg pluginChangedMsg) tea.Cmd {
 	p, open := m.Popup.(*PluginsPopup)
 	if msg.err != nil {
-		m.toast(ToastErr, -1, "%v", msg.err)
+		m.local("Error: " + msg.err.Error())
 		if open {
 			p.Busy, p.Doing = "", ""
 		}

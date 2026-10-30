@@ -12,41 +12,6 @@ import (
 	"github.com/pixelbender/claudit/internal/protocol"
 )
 
-// A toast slides in from the right edge, rests, fades, and never leaves the screen.
-func TestViewToast(t *testing.T) {
-	t0 := time.Unix(1000, 0)
-	toast := Toast{Kind: ToastOK, Text: "tests finished · 40s — and a very long tail that must be cut", Slot: 2, At: t0}
-	const w = 80
-	var xs []int
-	for age := time.Duration(0); age < toastLife; age += 20 * time.Millisecond {
-		pill, x := drawToast(toast, t0.Add(age), w)
-		if pill == "" {
-			continue
-		}
-		if x < 0 || x+ansi.StringWidth(pill) > w {
-			t.Fatalf("age %v: pill at %d, %d wide, off a %d-wide screen", age, x, ansi.StringWidth(pill), w)
-		}
-		xs = append(xs, x)
-	}
-	if len(xs) < 2 || xs[0] <= xs[len(xs)-1] {
-		t.Errorf("no slide in from the right: %v", xs)
-	}
-	rest, x := drawToast(toast, t0.Add(time.Second), w)
-	if x != w-ansi.StringWidth(rest)-2 || ansi.StringWidth(rest) > w/2 {
-		t.Errorf("resting toast at %d, %d wide", x, ansi.StringWidth(rest))
-	}
-	if !strings.Contains(ansi.Strip(rest), "✓ tests finished") || !strings.HasSuffix(ansi.Strip(rest), "… ") {
-		t.Errorf("toast %q", ansi.Strip(rest))
-	}
-	faded, _ := drawToast(toast, t0.Add(toastLife-50*time.Millisecond), w)
-	if faded == rest || ansi.Strip(faded) != ansi.Strip(rest) {
-		t.Error("a toast should fade its colours, not its text")
-	}
-	if icon, _ := drawToast(Toast{Icon: "◇", Text: "x", Slot: 1, At: t0}, t0.Add(time.Second), w); !strings.Contains(ansi.Strip(icon), "◇ x") {
-		t.Errorf("icon override: %q", ansi.Strip(icon))
-	}
-}
-
 func TestViewSuggest(t *testing.T) {
 	var names []protocol.Command
 	for i := range 12 {
@@ -107,7 +72,6 @@ func TestViewOverlays(t *testing.T) {
 		for _, h := range []int{16, 24, 41} {
 			m := drawTestModel(t, w, h)
 			m.Now = t0
-			m.Toasts = []Toast{{Text: "fresh", At: t0}, {Kind: ToastErr, Text: strings.Repeat("longer ", 20), At: t0.Add(-time.Second)}}
 			m.Input = Input{Text: []rune("/c"), Cursor: 2}
 			m.Suggest = []protocol.Command{{Name: "clear"}, {Name: "compact", Hint: "<instructions>", Description: "Free up context"}, {Name: "context"}}
 			drawCheckSize(t, m.View().Content, w, h)

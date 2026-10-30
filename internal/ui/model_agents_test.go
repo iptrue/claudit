@@ -87,12 +87,9 @@ func TestModelSubagent(t *testing.T) {
 	m, _ := modelNew(t, false)
 	modelEvents(m, protocol.ToolUse{ID: "call1", Name: "Agent", Input: map[string]any{"description": "Add mul", "subagent_type": "general-purpose"}})
 	sub := modelAgent(t, m, "call1")
-	// A subagent gets a name of its own; its task goes in the toast.
+	// A subagent gets a name of its own.
 	if sub.Kind != ide.Subagent || sub.Name != "Kevin" || sub.Parent != "main" || sub.Status != ide.Running || sub.Started != modelT0 {
 		t.Fatalf("subagent %+v", sub)
-	}
-	if !modelResumeToast(m, "Kevin started · Add mul") {
-		t.Errorf("toasts %+v", m.Toasts)
 	}
 
 	modelAt(m, time.Second)
@@ -335,13 +332,13 @@ func TestModelWorkflowTranscript(t *testing.T) {
 		t.Errorf("names %q %q", a.Name, m.Sim.FindAgent("ff00ff00ff").Name)
 	}
 
-	// TaskDone reads the transcripts one last time (an edit that failed, said in a toast), then
-	// stops following them; the calls left open end with the workflow.
-	modelAppend(t, first, modelCall("x3", "Edit")+`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x3","is_error":true,"content":"no match"}]}}`+"\n")
+	// TaskDone reads the transcripts one last time (an agent that came at the end), then stops
+	// following them; the calls left open end with the workflow.
+	modelAppend(t, filepath.Join(dir, "agent-0123456789.jsonl"), modelCall("x3", "Edit"))
 	modelAt(m, 2*time.Second)
 	modelEvents(m, protocol.TaskDone{TaskID: "w1", Status: "completed"})
-	if !slices.ContainsFunc(m.Toasts, func(t Toast) bool { return t.Text == "tests · Edit: no match" }) {
-		t.Errorf("final poll: toasts %+v", m.Toasts)
+	if m.Sim.FindAgent("0123456789") == nil {
+		t.Error("final poll: the last agent was not read")
 	}
 	if len(m.crew.tailers) != 0 {
 		t.Fatal("the tailer outlived its workflow")

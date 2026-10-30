@@ -113,7 +113,7 @@ func columnWidths(rw, n int) []int {
 // columnAt is the column at cell x of a view width cells wide, the cell it starts at and its
 // width; ok is false for none.
 func columnAt(st *ide.State, o Options, width, x int) (c column, cx, cw int, ok bool) {
-	ew := leftWidth(width, o)
+	ew := leftWidth(width)
 	if x < ew {
 		return column{}, 0, 0, false
 	}

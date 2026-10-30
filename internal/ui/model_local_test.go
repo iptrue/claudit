@@ -66,8 +66,8 @@ func modelLocalSay(m *Model, text string) tea.Cmd {
 func TestModelSlashTypo(t *testing.T) {
 	m, sent := modelLocalNew(t)
 	modelLocalSay(m, "/contxt")
-	if len(*sent) != 0 || string(m.Input.Text) != "/contxt" || !modelResumeToast(m, "unknown command /contxt · /context?") {
-		t.Fatalf("typo: sent %#v prompt %q toasts %+v", *sent, string(m.Input.Text), m.Toasts)
+	if len(*sent) != 0 || string(m.Input.Text) != "/contxt" || !modelResumeSaid(m, "unknown command /contxt · /context?") {
+		t.Fatalf("typo: sent %#v prompt %q chat %+v", *sent, string(m.Input.Text), m.Chat)
 	}
 	modelLocalSay(m, "/contxt") // enter again: as asked
 	if len(*sent) != 1 || modelUserText((*sent)[0]) != "/contxt" {
@@ -146,8 +146,8 @@ func TestModelSetModel(t *testing.T) {
 	}
 	modelLocalSay(m, "/model nonsense")
 	modelEvents(m, protocol.ControlError{RequestID: "model-2", Message: "Model 'nonsense' not found"})
-	if n := len(m.Toasts); m.Status.Model != "claude-sonnet-5-5" || n == 0 || m.Toasts[n-1].Text != "Model 'nonsense' not found" {
-		t.Errorf("refused: model %q toasts %+v", m.Status.Model, m.Toasts)
+	if m.Status.Model != "claude-sonnet-5-5" || !modelResumeSaid(m, "Error: Model 'nonsense' not found") {
+		t.Errorf("refused: model %q chat %+v", m.Status.Model, m.Chat)
 	}
 }
 
@@ -175,8 +175,8 @@ func TestModelSlashStatus(t *testing.T) {
 
 func TestModelSlashExportAndCopy(t *testing.T) {
 	m, _ := modelLocalNew(t)
-	if cmd := modelLocalSay(m, "/copy"); cmd != nil || !modelResumeToast(m, "no reply to copy yet") {
-		t.Errorf("/copy with nothing said: %v %+v", cmd, m.Toasts)
+	if cmd := modelLocalSay(m, "/copy"); cmd != nil || !modelResumeSaid(m, "no reply to copy yet") {
+		t.Errorf("/copy with nothing said: %v %+v", cmd, m.Chat)
 	}
 	m.Chat = []ChatEntry{
 		{Kind: UserEntry, Text: "add div", At: modelT0},
@@ -289,12 +289,12 @@ func TestModelBtw(t *testing.T) {
 		t.Fatalf("late answer: popup %v, said %v", m.Popup, m.btwSaid)
 	}
 
-	// A refusal shows in the popup, not as a toast; /clear forgets what was said.
+	// A refusal shows in the popup, not in the chat; /clear forgets what was said.
 	modelPress(m, inputTyped("/btw x")...)
 	modelPress(m, inputKey("enter"))
 	modelEvents(m, protocol.ControlError{RequestID: "btw-3", Message: "side_question timed out"})
-	if p := m.Popup.(*BtwPopup); !p.Failed || p.Answer != "side_question timed out" || len(m.Toasts) != 0 {
-		t.Fatalf("refusal: popup %+v, toasts %+v", p, m.Toasts)
+	if p := m.Popup.(*BtwPopup); !p.Failed || p.Answer != "side_question timed out" || modelResumeSaid(m, "timed out") {
+		t.Fatalf("refusal: popup %+v, chat %+v", p, m.Chat)
 	}
 	modelEvents(m, protocol.Reset{})
 	if m.btwSaid != nil {
@@ -321,8 +321,8 @@ func TestModelBtwRefused(t *testing.T) {
 			}
 			modelPress(m, inputTyped(tc.typed)...)
 			modelPress(m, inputKey("enter"))
-			if m.Popup != nil || len(*sent) != 0 || len(m.Toasts) == 0 {
-				t.Fatalf("popup %v, sent %v, toasts %+v", m.Popup, *sent, m.Toasts)
+			if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "/btw") {
+				t.Fatalf("popup %v, sent %v, chat %+v", m.Popup, *sent, m.Chat)
 			}
 		})
 	}

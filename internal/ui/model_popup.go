@@ -129,7 +129,7 @@ func (m *Model) answerQuestion(p *QuestionPopup) {
 		if p.AgentName != "" { // a subagent's: the chat's own words are main's
 			asked = p.AgentName + " · " + asked
 		}
-		m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, Text: asked, At: now}, ChatEntry{Kind: UserEntry, Text: answers[q.Text], At: now})
+		m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, Text: asked, At: now}, ChatEntry{Kind: UserEntry, Text: answers[q.Text], At: now, Answer: true})
 	}
 	in := make(map[string]any, len(p.Input)+1)
 	maps.Copy(in, p.Input)
@@ -167,7 +167,6 @@ func (m *Model) answerPermission(p *PermissionPopup, ok bool) {
 		return
 	}
 	m.Sim.Drop(p.ToolUseID)
-	m.crew.denied[p.ToolUseID] = true
 	m.closePopup(protocol.Deny{RequestID: p.RequestID, Message: "The user denied this tool call."}, "thinking")
 }
 

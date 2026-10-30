@@ -66,9 +66,9 @@ func modelResumeRun(m *Model, cmd tea.Cmd) {
 	}
 }
 
-// modelResumeToast reports whether a toast says s.
-func modelResumeToast(m *Model, s string) bool {
-	return slices.ContainsFunc(m.Toasts, func(t Toast) bool { return strings.Contains(t.Text, s) })
+// modelResumeSaid reports whether claudit says s in the chat.
+func modelResumeSaid(m *Model, s string) bool {
+	return slices.ContainsFunc(m.Chat, func(e ChatEntry) bool { return e.Kind == CommandEntry && strings.Contains(e.Text, s) })
 }
 
 func TestModelResume(t *testing.T) {
@@ -78,7 +78,7 @@ func TestModelResume(t *testing.T) {
 	modelResumeSubmit(m, "/resume")
 	p, ok := m.Popup.(*ResumePopup)
 	if !ok {
-		t.Fatalf("popup %#v, toasts %+v", m.Popup, m.Toasts)
+		t.Fatalf("popup %#v, chat %+v", m.Popup, m.Chat)
 	}
 	var ids []string
 	for _, s := range p.Sessions {
@@ -115,7 +115,7 @@ func TestModelResume(t *testing.T) {
 		t.Errorf("chat %+v", m.Chat)
 	}
 	if m.Popup != nil || m.Status.State != "starting" {
-		t.Errorf("popup %#v, state %q, toasts %+v", m.Popup, m.Status.State, m.Toasts)
+		t.Errorf("popup %#v, state %q, chat %+v", m.Popup, m.Status.State, m.Chat)
 	}
 	modelEvents(m, protocol.Commands{})
 	if m.Status.State != "idle" {
@@ -151,37 +151,37 @@ func TestModelResumeQuery(t *testing.T) {
 
 	m, sent = modelResumeNew(t)
 	modelResumeSubmit(m, "/resume nothing")
-	if m.Popup != nil || len(*sent) != 0 || !modelResumeToast(m, `no conversation matches "nothing"`) {
-		t.Errorf("popup %#v, sent %#v, toasts %+v", m.Popup, *sent, m.Toasts)
+	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, `no conversation matches "nothing"`) {
+		t.Errorf("popup %#v, sent %#v, chat %+v", m.Popup, *sent, m.Chat)
 	}
 }
 
 func TestModelResumeRefused(t *testing.T) {
 	m, sent := modelResumeNew(t)
 	modelResumeSubmit(m, "/resume current") // the one it is in
-	if m.Popup != nil || len(*sent) != 0 || !modelResumeToast(m, "no conversation matches") {
-		t.Errorf("current: popup %#v, sent %#v, toasts %+v", m.Popup, *sent, m.Toasts)
+	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "no conversation matches") {
+		t.Errorf("current: popup %#v, sent %#v, chat %+v", m.Popup, *sent, m.Chat)
 	}
 
 	m, sent = modelResumeNew(t)
 	m.Status.Busy = true
 	modelResumeSubmit(m, "/resume")
-	if m.Popup != nil || len(*sent) != 0 || !modelResumeToast(m, "claude is working") {
-		t.Errorf("busy: popup %#v, sent %#v, toasts %+v", m.Popup, *sent, m.Toasts)
+	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "claude is working") {
+		t.Errorf("busy: popup %#v, sent %#v, chat %+v", m.Popup, *sent, m.Chat)
 	}
 
 	m, sent = modelResumeNew(t)
 	m.Status.Replay = true
 	modelResumeSubmit(m, "/resume")
-	if m.Popup != nil || len(*sent) != 0 || !modelResumeToast(m, "replay") || len(m.Chat) != 0 {
-		t.Errorf("replay: popup %#v, sent %#v, toasts %+v, chat %+v", m.Popup, *sent, m.Toasts, m.Chat)
+	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "replay") || len(m.Chat) != 1 {
+		t.Errorf("replay: popup %#v, sent %#v, chat %+v", m.Popup, *sent, m.Chat)
 	}
 
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir()) // a project without saved conversations
 	m, sent = modelNew(t, false)
 	modelResumeSubmit(m, "/resume")
-	if m.Popup != nil || len(*sent) != 0 || !modelResumeToast(m, "no other conversation") {
-		t.Errorf("none: popup %#v, sent %#v, toasts %+v", m.Popup, *sent, m.Toasts)
+	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "no other conversation") {
+		t.Errorf("none: popup %#v, sent %#v, chat %+v", m.Popup, *sent, m.Chat)
 	}
 }
 

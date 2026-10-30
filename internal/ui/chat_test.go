@@ -157,6 +157,22 @@ func TestChatGap(t *testing.T) {
 	if n := drawChatCount(new(chatCache), entries, 40); n != len(want) {
 		t.Errorf("count %d, want %d", n, len(want))
 	}
+
+	// An answer to a popup's question sticks to the question; the blank line comes after it.
+	entries = []ChatEntry{
+		{Kind: AssistantEntry, Text: "said"},
+		{Kind: AssistantEntry, Text: "Which?"},
+		{Kind: UserEntry, Text: "this", Answer: true},
+		{Kind: AssistantEntry, Text: "And?"},
+		{Kind: UserEntry, Text: "that", Answer: true},
+		{Kind: UserEntry, Text: "next"},
+		{Kind: CaretEntry, Text: "⠋"},
+	}
+	want = []string{"  › said", "  › Which?", "  › this", "", "  › And?", "  › that", "", "  › next", "    ⠋"}
+	out, _ = renderChat(new(chatCache), entries, 40, len(want), 0)
+	if got := drawPlainLines(out); !slices.Equal(got, want) {
+		t.Errorf("answers %q, want %q", got, want)
+	}
 }
 
 func TestChatEntries(t *testing.T) {

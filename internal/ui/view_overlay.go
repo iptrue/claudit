@@ -16,79 +16,13 @@ import (
 	"github.com/pixelbender/claudit/internal/theme"
 )
 
-// How the overlays move: a toast slides in from the right and fades before it goes, a popup
-// drops in from above.
+// How the overlays move: a popup drops in from above.
 const (
-	drawToastSlide = 220 * time.Millisecond
-	drawToastFade  = 700 * time.Millisecond
 	drawPopupDrop  = 180 * time.Millisecond
 	drawSuggestMax = 8 // completion rows on screen
 )
 
-var styleToastBg = theme.LineBg
-
 func drawEaseOut(t float64) float64 { return 1 - math.Pow(1-min(max(t, 0), 1), 3) }
-
-// drawToasts lays the toasts out top-down at the right edge of a w-wide screen, starting at row y.
-func drawToasts(toasts []Toast, now time.Time, w, y int) []*lipgloss.Layer {
-	var layers []*lipgloss.Layer
-	for i, t := range toasts {
-		box, x := drawToast(t, now, w)
-		if box != "" {
-			layers = append(layers, lipgloss.NewLayer(box).X(x).Y(y+i))
-		}
-	}
-	return layers
-}
-
-// drawToast renders one toast as a pill at most w/2 cells wide and returns it with its column:
-// sliding in from the right edge while new, fading toward the background before it goes.
-func drawToast(t Toast, now time.Time, w int) (string, int) {
-	age := now.Sub(t.At)
-	if age < 0 {
-		age = 0
-	}
-	icon, ic := "●", theme.Accent
-	switch t.Kind {
-	case ToastOK:
-		icon, ic = "✓", theme.OK
-	case ToastErr:
-		icon, ic = "✗", theme.Err
-	}
-	if t.Icon != "" {
-		icon = t.Icon
-		if t.Slot >= 0 {
-			ic = drawAgentColor(t.Slot)
-		}
-	}
-	bar := ic
-	if t.Slot >= 0 {
-		bar = drawAgentColor(t.Slot)
-	}
-	fade := 0.0
-	if left := toastLife - age; left < drawToastFade {
-		fade = 1 - float64(max(left, 0))/float64(drawToastFade)
-	}
-	fg, bg := theme.Mix(theme.Fg, theme.Bg, fade), theme.Mix(styleToastBg, theme.Bg, fade)
-	bar, ic = theme.Mix(bar, theme.Bg, fade), theme.Mix(ic, theme.Bg, fade)
-
-	room := max(4, w/2-5)
-	text := ansi.Truncate(drawOneLine(t.Text), room, "…")
-	s := lipgloss.NewStyle().Background(bg)
-	pill := s.Foreground(bar).Render("▌") + s.Foreground(ic).Render(" "+icon+" ") + s.Foreground(fg).Render(text+" ")
-	pw := ansi.StringWidth(pill)
-	x := w - pw - 2
-	if age < drawToastSlide {
-		x += int((1 - drawEaseOut(float64(age)/float64(drawToastSlide))) * float64(pw+2))
-	}
-	if x >= w {
-		return "", 0
-	}
-	if x+pw > w { // still sliding in: cut what is past the edge
-		pill = drawTrunc(pill, w-x)
-	}
-	return pill, max(x, 0)
-}
 
 // renderSuggest draws the slash-command completion list: each name with the typed part in bold,
 // its argument hint, and its description dimmed after them; the highlighted one lit, the list

@@ -57,12 +57,6 @@ func (m *Model) copySelection() tea.Cmd {
 	if text == "" {
 		return nil
 	}
-	n := strings.Count(text, "\n") + 1
-	unit := "lines"
-	if n == 1 {
-		unit = "line"
-	}
-	m.toast(ToastInfo, -1, "copied %d %s", n, unit)
 	return copyText(text)
 }
 

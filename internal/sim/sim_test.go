@@ -443,7 +443,7 @@ func TestSearchTools(t *testing.T) {
 }
 
 // A web tool types its address into the agent's browser, loads while it runs, then the page comes
-// in: the links a search found, then its text.
+// in: the links a search found, then its text. The page stays a while before the next call.
 func TestBrowse(t *testing.T) {
 	s, _ := setup(t, nil)
 	s.ToolUse("main", "w", "WebSearch", map[string]any{"query": "bubble tea"})
@@ -453,10 +453,25 @@ func TestBrowse(t *testing.T) {
 		t.Fatalf("while loading: focus %v page %+v", m.Focus, m.Page)
 	}
 	s.ToolResult("w", "Web search results for query: \"bubble tea\"\n\nLinks: [{\"title\":\"Bubble Tea\",\"url\":\"https://github.com/charmbracelet/bubbletea\"}]\n\nA **TUI** framework.", false)
-	play(s, now, 5*time.Second, nil)
+	s.ToolUse("main", "b", "Bash", map[string]any{"command": "ls"}) // waiting: catch-up is on
+	s.ToolResult("b", "", false)
 	want := []ide.PageLine{{Text: "Bubble Tea", URL: "https://github.com/charmbracelet/bubbletea"}, {}, {Text: "A **TUI** framework."}}
+	at := now.Add(-frame)
+	var shown, left time.Time
+	play(s, now, 5*time.Second, func() {
+		at = at.Add(frame)
+		if shown.IsZero() && len(m.Page.Lines) == len(want) {
+			shown = at
+		}
+		if !shown.IsZero() && left.IsZero() && m.Focus != ide.Browser {
+			left = at
+		}
+	})
 	if !reflect.DeepEqual(m.Page.Lines, want) || !m.Page.LoadAt.IsZero() || m.Activity != "" {
 		t.Fatalf("loaded: %+v", m.Page)
+	}
+	if left.IsZero() || left.Sub(shown) < pagePause-frame { // seen a frame late at most
+		t.Errorf("the page stayed %v, want at least %v", left.Sub(shown), pagePause)
 	}
 
 	s.ToolUse("main", "f", "WebFetch", map[string]any{"url": "https://go.dev", "prompt": "x"})

@@ -69,19 +69,14 @@ func TestModelMouseToggleFolder(t *testing.T) {
 	}
 }
 
-// A click on a file in the explorer opens it in the editor; a binary one says why it does not.
+// A click on a file in the explorer opens it in the editor.
 func TestModelMouseOpensFile(t *testing.T) {
 	m, _ := modelMouseNew(t)
 	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "notes.txt"), []byte("hello from disk"), 0o644)
-	os.WriteFile(filepath.Join(root, "blob.bin"), []byte("x\x00y"), 0o644)
 	m.Sim.SetRoot(root)
 	modelMouseClick(t, m, "notes.txt")
 	modelMouseAt(t, m, "hello from disk")
-	modelMouseClick(t, m, "blob.bin")
-	if !modelResumeToast(m, "blob.bin is binary or unreadable") {
-		t.Errorf("toasts %v", m.Toasts)
-	}
 }
 
 func TestModelMouseScroll(t *testing.T) {
@@ -255,8 +250,8 @@ func TestModelMouseSelect(t *testing.T) {
 		t.Errorf("two rows: %q, lit %v", m.sel.text, strings.Contains(v.Content, "48;2"))
 	}
 	_, cmd := m.Update(tea.MouseReleaseMsg{X: x + 3, Y: y + 1, Button: tea.MouseLeft}) // not run: it would copy
-	if n := len(m.Toasts); cmd == nil || n == 0 || m.Toasts[n-1].Text != "copied 2 lines" || m.sel != (selection{}) {
-		t.Errorf("release: cmd %v toasts %+v selection %+v", cmd != nil, m.Toasts, m.sel)
+	if cmd == nil || m.sel != (selection{}) {
+		t.Errorf("release: cmd %v selection %+v", cmd != nil, m.sel)
 	}
 
 	// A click without a drag copies nothing.

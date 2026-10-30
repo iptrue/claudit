@@ -83,7 +83,7 @@ func step(d, n, lo, hi int) int {
 // back follows its agent.
 func Prune(st *ide.State, o Options, width int) {
 	shown := map[string]bool{filesPane: o.Panel == Files}
-	for _, c := range columns(st, camera(st), o, width-leftWidth(width, o)) {
+	for _, c := range columns(st, camera(st), o, width-leftWidth(width)) {
 		shown[paneKey(st, c)] = true
 	}
 	maps.DeleteFunc(o.Scroll, func(k string, _ int) bool { return !shown[k] })

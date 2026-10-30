@@ -43,7 +43,12 @@ var flags = []string{
 func Spawn(ctx context.Context, args []string) (*Session, error) {
 	events := make(chan protocol.Event, 64)
 	send := make(chan protocol.Outbound, 64)
-	p, err := start(ctx, args, events)
+	limits := make(chan protocol.RateLimits, 1)
+	env, err := proxyEnv(ctx, limits)
+	if err != nil {
+		return nil, err
+	}
+	p, err := start(ctx, args, env, events)
 	if err != nil {
 		return nil, err
 	}
@@ -59,12 +64,14 @@ func Spawn(ctx context.Context, args []string) (*Session, error) {
 					continue
 				}
 				p.stop() // its events are all out: none follows those of the new one
-				next, err := start(ctx, withResume(args, r.SessionID), events)
+				next, err := start(ctx, withResume(args, r.SessionID), env, events)
 				if err != nil {
 					emit(ctx, events, protocol.Exited{Err: err})
 					return
 				}
 				p = next
+			case l := <-limits:
+				emit(ctx, events, l)
 			case <-p.done:
 				emit(ctx, events, protocol.Exited{Err: p.err})
 				return
@@ -103,10 +110,12 @@ type proc struct {
 	err            error              // how it exited, once done
 }
 
-// start runs claude with args. Its events go to events until it ends or stop is called.
-func start(ctx context.Context, args []string, events chan<- protocol.Event) (*proc, error) {
+// start runs claude with args in env (nil: claudit's own). Its events go to events until it ends
+// or stop is called.
+func start(ctx context.Context, args, env []string, events chan<- protocol.Event) (*proc, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, "claude", append(slices.Clone(flags), args...)...)
+	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()

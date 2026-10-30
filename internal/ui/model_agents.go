@@ -28,7 +28,6 @@ type crew struct {
 	activity map[string]string           // agent key → the Activity copied from workflow progress
 	tailers  []tailer                    // transcripts of the running workflows
 	polled   time.Time                   // last poll of the tailers
-	denied   map[string]bool             // tool calls the user denied: their failure is no news
 	named    int                         // subagents named so far
 }
 
@@ -44,7 +43,6 @@ func newCrew() crew {
 		slots:    map[string]string{},
 		calls:    map[string]protocol.ToolUse{},
 		activity: map[string]string{},
-		denied:   map[string]bool{},
 	}
 }
 
@@ -63,44 +61,19 @@ func (m *Model) agentByID(id string) *ide.Agent {
 // again with a number.
 var subagentNames = []string{"Kevin", "Stuart", "Bob", "Dave", "Jerry", "Carl", "Phil", "Tim", "Mark", "Jorge", "Otto", "Norbert"}
 
-// addAgent registers a new agent with the sim; a subagent or a workflow says hello with a toast. A
-// subagent gets a name of its own; name, its task, goes in the toast.
+// addAgent registers a new agent with the sim. A subagent gets a name of its own.
 func (m *Model) addAgent(key string, kind ide.AgentKind, parent, name string) *ide.Agent {
 	a := m.Sim.Agent(key, kind)
 	a.Parent, a.Name = parent, name
-	switch kind {
-	case ide.Subagent:
+	if kind == ide.Subagent {
 		n := m.crew.named
 		m.crew.named++
 		a.Name = subagentNames[n%len(subagentNames)]
 		if n >= len(subagentNames) {
 			a.Name += " " + strconv.Itoa(n/len(subagentNames)+1)
 		}
-		if name != "" && name != "agent" {
-			m.toast(ToastInfo, a.Color, "◇ %s started · %s", a.Name, name)
-		} else {
-			m.toast(ToastInfo, a.Color, "◇ %s started", a.Name)
-		}
-	case ide.Workflow:
-		m.toast(ToastInfo, a.Color, "▣ workflow %s started", cmp.Or(name, "workflow"))
 	}
 	return a
-}
-
-// failing are the tools whose failure is news: a command that broke, an edit that did not apply.
-var failing = map[string]bool{"Bash": true, "Edit": true, "Write": true, "NotebookEdit": true}
-
-// toolFailed tells about a failed call of a's in a toast.
-func (m *Model) toolFailed(a *ide.Agent, id, tool, output string) {
-	if a == nil || !failing[tool] || m.crew.denied[id] {
-		return
-	}
-	out := strings.TrimSpace(strings.NewReplacer("<tool_use_error>", "", "</tool_use_error>", "").Replace(output))
-	who := ""
-	if a.Kind != ide.Main {
-		who = a.Name + " · "
-	}
-	m.toast(ToastErr, a.Color, "%s%s: %s", who, tool, cmp.Or(firstLineOf(out), "failed"))
 }
 
 // toolUse handles a tool call from the stream: the main agent's or a subagent's.
@@ -141,9 +114,6 @@ func workflowName(script string) string {
 func (m *Model) toolResult(ev protocol.ToolResult, now time.Time) {
 	call := m.crew.calls[ev.ID]
 	delete(m.crew.calls, ev.ID)
-	if ev.IsError {
-		m.toolFailed(m.Sim.FindAgent(cmp.Or(call.Parent, "main")), ev.ID, call.Name, ev.Output)
-	}
 	m.Sim.ToolResult(ev.ID, ev.Output, ev.IsError)
 	switch call.Name {
 	case "Agent", "Task", "Workflow":
@@ -320,17 +290,6 @@ func (m *Model) finish(a *ide.Agent, status ide.AgentStatus, now time.Time) {
 	if a.Activity != "" && a.Activity == m.crew.activity[a.Key] {
 		a.Activity = ""
 	}
-	if a.Kind == ide.Subagent || a.Kind == ide.Workflow {
-		took := ""
-		if !a.Started.IsZero() {
-			took = " · " + now.Sub(a.Started).Truncate(time.Second).String() // as the agents panel counts
-		}
-		if status == ide.Done {
-			m.toast(ToastOK, a.Color, "%s finished%s", a.Name, took)
-		} else {
-			m.toast(ToastErr, a.Color, "%s failed%s", a.Name, took)
-		}
-	}
 }
 
 // follow plays what the agents of a workflow did since the last poll of its transcripts.
@@ -344,11 +303,7 @@ func (m *Model) follow(t tailer, now time.Time) {
 			m.Sim.ToolUse(ev.Parent, ev.ID, ev.Name, ev.Input)
 			m.crew.calls[ev.ID] = ev
 		case protocol.ToolResult:
-			call, ok := m.crew.calls[ev.ID]
 			delete(m.crew.calls, ev.ID)
-			if ok && ev.IsError {
-				m.toolFailed(m.Sim.FindAgent(call.Parent), ev.ID, call.Name, ev.Output)
-			}
 			m.Sim.ToolResult(ev.ID, ev.Output, ev.IsError)
 		}
 	}
@@ -365,7 +320,6 @@ func (m *Model) tick(now time.Time) {
 	m.replayAllow(now)
 	m.Sim.Tick(now)
 	m.Status.Frame = int(now.UnixMilli() / 100)
-	m.expireToasts(now)
 }
 
 // exited ends everything still running: claude is gone, nothing will report on it any more.

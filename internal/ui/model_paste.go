@@ -94,7 +94,7 @@ func (m *Model) message(text string) protocol.UserMessage {
 // pasted puts pictures read for the prompt at its cursor.
 func (m *Model) pasted(msg imagesMsg) {
 	if msg.err != nil {
-		m.toast(ToastErr, -1, "%v", msg.err)
+		m.local("Error: " + msg.err.Error())
 	}
 	for _, im := range msg.images {
 		m.Input.insert(m.attach(attachment{image: &im}) + " ")

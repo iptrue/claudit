@@ -766,11 +766,11 @@ func TestAgentsPanel(t *testing.T) {
 	out := Render(st, o, 160, 30)
 	rows := leftRows(out, 160)
 	want := []string{
-		" 1 ⠋ main ◉ Edit main.go              12s",
-		" 2   ✓ tests Read main.go              3m",
-		"     ⠋ build                          45s",
+		" 1 ⠋ main ◉ Edit main.go  12s",
+		" 2   ✓ tests Read main.go  3m",
+		"     ⠋ build              45s",
 		"       Check ▱▱▱▱ 0/4",
-		" 3       ⠋ lint Bash go vet            3s",
+		" 3       ⠋ lint Bash go v… 3s",
 		" 5       ⠋ vet",
 		"         · 2 queued",
 		"       Write ▰ 1/1",

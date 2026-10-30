@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -78,8 +77,8 @@ func TestModelSlashLocal(t *testing.T) {
 	// A command of the interactive claude alone goes nowhere; a terminal-oriented one runs.
 	modelPress(m, inputTyped("/memory")...)
 	modelPress(m, inputKey("enter"))
-	if len(*sent) != 0 || len(m.Chat) != 0 || len(m.Toasts) != 1 || !strings.Contains(m.Toasts[0].Text, "/memory runs only in the interactive claude") {
-		t.Errorf("interactive only: sent %#v chat %v toasts %+v", *sent, m.Chat, m.Toasts)
+	if len(*sent) != 0 || len(m.Chat) != 1 || !strings.Contains(m.Chat[0].Text, "/memory runs only in the interactive claude") {
+		t.Errorf("interactive only: sent %#v chat %v", *sent, m.Chat)
 	}
 	m.Input = Input{}
 	modelPress(m, inputTyped("/doctor")...)
@@ -87,7 +86,7 @@ func TestModelSlashLocal(t *testing.T) {
 	if len(*sent) != 1 || modelUserText((*sent)[0]) != "/doctor" {
 		t.Errorf("/doctor: sent %#v", *sent)
 	}
-	*sent, m.Toasts = nil, nil
+	*sent, m.Chat = nil, nil
 	modelEvents(m, protocol.Result{})
 
 	modelPress(m, inputTyped("/help")...)
@@ -139,46 +138,6 @@ func TestModelReset(t *testing.T) {
 	want := []ChatEntry{{Kind: CommandEntry, Text: "Conversation cleared", At: modelT0}, {Kind: CommandEntry, Text: "## Context Usage", At: modelT0}}
 	if !reflect.DeepEqual(m.Chat, want) || m.ChatScroll != 0 {
 		t.Errorf("chat after reset %+v scroll %d", m.Chat, m.ChatScroll)
-	}
-}
-
-func TestModelToasts(t *testing.T) {
-	m, _ := modelNew(t, false)
-	modelEvents(m,
-		protocol.ToolUse{ID: "s1", Name: "Agent", Input: map[string]any{"description": "tests"}},
-		protocol.ToolUse{ID: "b1", Name: "Bash", Input: map[string]any{"command": "go test"}, Parent: "s1"},
-		protocol.ToolResult{ID: "b1", Output: "<tool_use_error>exit status 1\nFAIL</tool_use_error>", IsError: true},
-		protocol.ToolUse{ID: "r1", Name: "Read", Input: map[string]any{"file_path": "/nope"}},
-		protocol.ToolResult{ID: "r1", Output: "no such file", IsError: true}, // reads failing is not news
-	)
-	sub := modelAgent(t, m, "s1")
-	modelAt(m, 40*time.Second)
-	modelEvents(m, protocol.TaskDone{ToolUseID: "s1", Status: "completed"})
-	var got []string
-	for _, ts := range m.Toasts {
-		got = append(got, ts.Icon+"|"+ts.Text)
-		if ts.Slot != sub.Color {
-			t.Errorf("toast %+v not in the subagent's colour", ts)
-		}
-	}
-	want := []string{"◇|Kevin started · tests", "|Kevin · Bash: exit status 1", "|Kevin finished · 40s"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("toasts %q, want %q", got, want)
-	}
-	if m.Toasts[1].Kind != ToastErr || m.Toasts[2].Kind != ToastOK {
-		t.Errorf("kinds %+v", m.Toasts)
-	}
-
-	// At most maxToasts at once; each goes after toastLife.
-	for i := range 6 {
-		m.toast(ToastInfo, -1, "n%d", i)
-	}
-	if len(m.Toasts) != maxToasts || m.Toasts[0].Text != "n2" {
-		t.Errorf("toasts %+v", m.Toasts)
-	}
-	m.Update(tickMsg(m.Now.Add(toastLife)))
-	if len(m.Toasts) != 0 {
-		t.Errorf("toasts outlived toastLife: %+v", m.Toasts)
 	}
 }
 
@@ -305,29 +264,17 @@ func TestModelAnimating(t *testing.T) {
 	}
 }
 
-// The exit notice outlasts the toasts of the agents it ends.
-func TestModelExitToastLast(t *testing.T) {
-	m, _ := modelNew(t, false)
-	for i := range 5 {
-		modelEvents(m, protocol.ToolUse{ID: fmt.Sprint("a", i), Name: "Agent", Input: map[string]any{"description": fmt.Sprint("agent ", i)}})
-	}
-	modelEvents(m, protocol.Exited{})
-	if last := m.Toasts[len(m.Toasts)-1]; last.Text != "claude exited" {
-		t.Errorf("last toast %+v", last)
-	}
-}
-
-// An error the CLI already said in the conversation is not repeated in a toast.
+// An error the CLI already said in the conversation is not repeated.
 func TestModelErrorOnce(t *testing.T) {
 	m, _ := modelNew(t, false)
 	modelEvents(m, protocol.CLIReply{Text: "API Error: 529 overloaded"},
 		protocol.Result{IsError: true, Text: "API Error: 529 overloaded"})
-	if len(m.Toasts) != 0 {
-		t.Errorf("toasts %+v", m.Toasts)
+	if len(m.Chat) != 1 {
+		t.Errorf("chat %+v", m.Chat)
 	}
 	modelEvents(m, protocol.Result{IsError: true, Text: "error_max_turns"})
-	if len(m.Toasts) != 1 {
-		t.Errorf("a new error got no toast: %+v", m.Toasts)
+	if n := len(m.Chat); n != 2 || m.Chat[n-1].Text != "error_max_turns" {
+		t.Errorf("a new error is not in the chat: %+v", m.Chat)
 	}
 }
 
@@ -518,7 +465,7 @@ func TestModelCommandsOutOfChat(t *testing.T) {
 	if len(m.Chat) != 2 || m.Chat[1].Kind != CommandEntry {
 		t.Errorf("the output: chat %+v", m.Chat)
 	}
-	modelLocalSay(m, "/compact")
+	modelLocalSay(m, "/context")
 	modelPress(m, inputKey("esc"))
 	modelEvents(m, protocol.Result{IsError: true})
 	if m.Chat[0].Cut || len(m.Chat) != 2 {
@@ -538,16 +485,16 @@ func TestModelCaret(t *testing.T) {
 	modelPress(m, inputTyped("Fix it")...)
 	modelPress(m, inputKey("enter"))
 	spin := drawSpinner[m.Status.Frame%len(drawSpinner)]
-	if got, want := chat(), []string{"  › Fix it", "   " + spin}; !slices.Equal(got, want) {
+	if got, want := chat(), []string{"  › Fix it", "    " + spin}; !slices.Equal(got, want) {
 		t.Fatalf("chat %q, want %q", got, want)
 	}
-	if e := m.chatEntries()[1]; !slices.Equal(drawEntry(e, 60), []string{" " + styleReply.Render(spin)}) {
+	if e := m.chatEntries()[1]; !slices.Equal(drawEntry(e, 60), []string{"  " + styleReply.Render(spin)}) {
 		t.Errorf("caret %q is not white", drawEntry(e, 60))
 	}
 	modelPress(m, inputTyped("And docs")...)
 	modelPress(m, inputKey("enter"))
 	modelEvents(m, protocol.TextDelta{Text: "on it"})
-	if got, want := chat(), []string{"  › Fix it", "  › on it", "   " + spin, "  › And docs"}; !slices.Equal(got, want) {
+	if got, want := chat(), []string{"  › Fix it", "  › on it", "    " + spin, "  › And docs"}; !slices.Equal(got, want) {
 		t.Errorf("chat %q, want %q", got, want)
 	}
 	m.pending = nil

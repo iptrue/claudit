@@ -58,6 +58,7 @@ type result struct {
 
 type step struct {
 	delay time.Duration // wait before the step, before catch-up
+	fixed bool          // catch-up does not shorten the delay
 	wait  bool          // the step needs the tool result
 	score int           // how interesting it is to watch, for the camera
 	run   func()
@@ -355,7 +356,11 @@ func (s *Sim) advance(l *lane, now time.Time) bool {
 		if st.wait && l.cur.res == nil || s.held[l.cur.id] {
 			break
 		}
-		due := l.clock.Add(l.scale(st.delay))
+		d := st.delay
+		if !st.fixed {
+			d = l.scale(d)
+		}
+		due := l.clock.Add(d)
 		if due.After(now) {
 			break
 		}
@@ -397,6 +402,11 @@ func (l *lane) scale(d time.Duration) time.Duration {
 
 func (sc *scene) add(d time.Duration, run func()) {
 	sc.steps = append(sc.steps, step{delay: d, score: sc.score, run: run})
+}
+
+// hold adds a pause catch-up does not shorten: the audience gets to see what is on screen.
+func (sc *scene) hold(d time.Duration) {
+	sc.steps = append(sc.steps, step{delay: d, fixed: true, score: sc.score, run: func() {}})
 }
 
 // await adds a step that runs once the tool result is in; run may add the steps that follow.

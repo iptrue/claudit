@@ -75,7 +75,7 @@ type exportedMsg struct {
 // file named after the time), off the UI's way.
 func (m *Model) export(file string) tea.Cmd {
 	if len(m.Chat) == 0 {
-		m.toast(ToastInfo, -1, "/export: nothing said yet")
+		m.local("/export: nothing said yet")
 		return nil
 	}
 	root, now := m.Sim.State().Root, m.clock()
@@ -123,7 +123,7 @@ func (m *Model) copyReply() tea.Cmd {
 			return tea.SetClipboard(strings.TrimSpace(e.Text))
 		}
 	}
-	m.toast(ToastInfo, -1, "/copy: no reply to copy yet")
+	m.local("/copy: no reply to copy yet")
 	return nil
 }
 
@@ -214,11 +214,11 @@ func (*BtwPopup) isPopup() {}
 func (m *Model) btw(question string) {
 	switch {
 	case question == "":
-		m.toast(ToastInfo, -1, "/btw <question>: ask while claude works, outside the conversation")
+		m.local("/btw <question>: ask while claude works, outside the conversation")
 	case m.Status.Replay:
-		m.toast(ToastInfo, -1, "replay: /btw is not available")
+		m.local("replay: /btw is not available")
 	case m.Status.State == "exited":
-		m.toast(ToastErr, -1, "claude has exited: /btw has no one to ask")
+		m.local("Error: claude has exited: /btw has no one to ask")
 	default:
 		m.btwReqs++
 		p := &BtwPopup{RequestID: fmt.Sprintf("btw-%d", m.btwReqs), Question: question}

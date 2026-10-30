@@ -93,7 +93,7 @@ func TestModelPluginsInstalled(t *testing.T) {
 }
 
 // The offers are found by what their name or description has; enter installs one. One the CLI
-// refuses is a toast, and nothing is reloaded.
+// refuses is said in the chat, and nothing is reloaded.
 func TestModelPluginsDiscover(t *testing.T) {
 	m, sent, ran := modelPluginsNew(t)
 	modelResumeRun(m, modelLocalSay(m, "/plugin"))
@@ -105,8 +105,8 @@ func TestModelPluginsDiscover(t *testing.T) {
 	}
 	_, cmd := m.Update(inputKey("enter"))
 	modelResumeRun(m, cmd)
-	if !modelResumeToast(m, "docs@web runs a command") || p.Busy != "" || len(*sent) != 0 {
-		t.Errorf("refused: toasts %+v, busy %q, sent %#v", m.Toasts, p.Busy, *sent)
+	if !modelResumeSaid(m, "docs@web runs a command") || p.Busy != "" || len(*sent) != 0 {
+		t.Errorf("refused: chat %+v, busy %q, sent %#v", m.Chat, p.Busy, *sent)
 	}
 
 	modelPress(m, inputKey("ctrl+u"))
@@ -120,7 +120,7 @@ func TestModelPluginsDiscover(t *testing.T) {
 // A replay has no plugins of its own to manage.
 func TestModelPluginsReplay(t *testing.T) {
 	m, _ := modelNew(t, true)
-	if cmd := modelLocalSay(m, "/plugins"); cmd != nil || m.Popup != nil || !modelResumeToast(m, "/plugins is not available") {
-		t.Errorf("replay: popup %+v, toasts %+v", m.Popup, m.Toasts)
+	if cmd := modelLocalSay(m, "/plugins"); cmd != nil || m.Popup != nil || !modelResumeSaid(m, "/plugins is not available") {
+		t.Errorf("replay: popup %+v, chat %+v", m.Popup, m.Chat)
 	}
 }
