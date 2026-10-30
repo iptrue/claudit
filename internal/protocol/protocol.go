@@ -1,0 +1,818 @@
+// Package protocol speaks the stream-json protocol of
+// `claude -p --input-format stream-json --output-format stream-json --verbose
+// --include-partial-messages --permission-prompt-tool stdio`.
+//
+// Every line on stdout is one JSON object; Parse turns it into zero or more Events.
+// Every line written to stdin is produced by Encode.
+package protocol
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Event is something the agent did, as seen on its stdout.
+type Event interface{ isEvent() }
+
+// Init is the session handshake (`{"type":"system","subtype":"init"}`); it comes with every turn.
+type Init struct {
+	SessionID      string
+	Model          string
+	Cwd            string
+	PermissionMode string
+	OutputStyle    string
+	Version        string      // of the CLI
+	Commands       []string    // slash commands the session runs, without "/"
+	MCP            []MCPServer // the MCP servers and how they are doing
+}
+
+// MCPServer is one MCP server of the session; Status is "connected", "pending", "failed", ….
+type MCPServer struct{ Name, Status string }
+
+// Reset: the conversation starts over (`/clear`); a new Init follows.
+type Reset struct{}
+
+// Commands is the answer to Initialize: the slash commands of the session and what some of them
+// choose from.
+type Commands struct {
+	List         []Command
+	Models       []Model  // what /model takes, in the CLI's order
+	OutputStyles []string // what /output-style takes
+	Version      string   // of the CLI
+	Account      string   // who is signed in, e.g. "ann@example.com · Claude Max"; "" with an API key
+}
+
+// Command is one slash command; Hint describes its arguments, Aliases are other names for it.
+type Command struct {
+	Name, Description, Hint string
+	Aliases                 []string
+}
+
+// Model is one choice of /model: Value is what the command takes, Resolved the model it runs.
+type Model struct {
+	Value, Name, Description, Resolved string
+	Efforts                            []string // the effort levels it supports
+}
+
+// ModeChanged: the permission mode is now Mode (`{"type":"system","subtype":"status","permissionMode":…}`),
+// e.g. after a SetMode.
+type ModeChanged struct{ Mode string }
+
+// ModelChanged: after a SetModel, the session runs Model ("claude-haiku-5-5").
+type ModelChanged struct{ Model string }
+
+// ControlError: the CLI refused a control request of ours, e.g. a SetMode to a mode it cannot enter.
+type ControlError struct{ RequestID, Message string }
+
+// SideAnswer answers a SideQuestion.
+type SideAnswer struct{ RequestID, Text string }
+
+// Thinking: the model started a thinking block.
+type Thinking struct{}
+
+// TextStart: the model started a new block of visible text. TextDelta chunks follow.
+type TextStart struct{}
+
+// TextDelta is a streamed chunk of the current text block.
+type TextDelta struct{ Text string }
+
+// Context is how full the main agent's context is as a model call starts: the tokens the call
+// reads (`message_start` usage).
+type Context struct {
+	Model  string
+	Tokens int
+}
+
+// CLIReply is a reply of the CLI itself rather than the model: a slash command's output or an
+// API error. It comes whole, not streamed.
+type CLIReply struct{ Text string }
+
+// ToolUse: the model called a tool. Parent is the Task tool call id for subagent calls, empty otherwise.
+type ToolUse struct {
+	ID     string
+	Name   string
+	Input  map[string]any
+	Parent string
+}
+
+// ToolResult is the outcome of the ToolUse with the same ID.
+type ToolResult struct {
+	ID      string
+	Output  string
+	IsError bool
+}
+
+// PermissionRequest asks the host whether a tool may run. AskUserQuestion arrives this way too:
+// the answers go back inside the Allow input.
+type PermissionRequest struct {
+	RequestID string
+	ToolName  string
+	Input     map[string]any
+	ToolUseID string
+	AgentID   string // the subagent or workflow agent asking; empty for the main agent
+}
+
+// TaskStarted: a subagent (Type "local_agent") or a workflow ("local_workflow") began.
+// ToolUseID is the Agent or Workflow tool call that started it.
+type TaskStarted struct {
+	TaskID       string // for a subagent, its agent id (as in PermissionRequest.AgentID)
+	ToolUseID    string
+	Type         string
+	Description  string
+	WorkflowName string
+}
+
+// TaskProgress reports on a running task. Workflow lists the workflow's phases and agents
+// (possibly only some of them); it is nil for subagents.
+type TaskProgress struct {
+	TaskID      string
+	ToolUseID   string
+	Description string // e.g. "Reading calc.py", or "Build: tests" for a workflow
+	LastTool    string
+	Workflow    []WorkflowItem
+}
+
+// WorkflowItem is one phase or one agent of a workflow, as in task_progress.workflow_progress.
+type WorkflowItem struct {
+	Phase           bool   // a phase header rather than an agent
+	Index           int    // phase index, or agent index
+	Title           string // phase title, or agent label
+	PhaseIndex      int    // agents: their phase
+	PhaseTitle      string // agents: their phase
+	AgentID         string // agents: empty while queued
+	State           string // agents, as reported: "start", "progress", "done", …
+	Model           string
+	LastTool        string
+	LastToolSummary string
+	ResultPreview   string
+	Tokens          int
+	ToolCalls       int
+	DurationMS      int64
+}
+
+// TaskDone: a task finished (task_notification, or task_updated with a final status).
+type TaskDone struct {
+	TaskID    string
+	ToolUseID string
+	Status    string // "completed", "failed", "killed", …
+	Summary   string
+}
+
+// Result ends a turn.
+type Result struct {
+	IsError        bool
+	Text           string
+	CostUSD        float64
+	DurationMS     int64
+	ContextWindows map[string]int // the context window of each model the session used, by model id
+}
+
+// RateLimits is how much of the subscription's rate-limit windows is used, as the headers of the
+// last API response had it (`rate_limit_event`). A window the account lacks is nil.
+type RateLimits struct {
+	Session *Window // five_hour
+	Week    *Window // seven_day
+	Fable   *Window // seven_day_overage_included: the weekly bucket of Fable
+}
+
+// Window is one rate-limit window.
+type Window struct {
+	Used     float64 // fraction of the window used; can pass 1
+	ResetsAt time.Time
+}
+
+// Stderr is one line the process wrote to stderr.
+type Stderr struct{ Line string }
+
+// Exited: the agent process is gone. Err is nil on a clean exit.
+type Exited struct{ Err error }
+
+func (Init) isEvent()              {}
+func (ModeChanged) isEvent()       {}
+func (ModelChanged) isEvent()      {}
+func (ControlError) isEvent()      {}
+func (SideAnswer) isEvent()        {}
+func (Reset) isEvent()             {}
+func (Commands) isEvent()          {}
+func (Thinking) isEvent()          {}
+func (TextStart) isEvent()         {}
+func (TextDelta) isEvent()         {}
+func (Context) isEvent()           {}
+func (CLIReply) isEvent()          {}
+func (ToolUse) isEvent()           {}
+func (ToolResult) isEvent()        {}
+func (PermissionRequest) isEvent() {}
+func (TaskStarted) isEvent()       {}
+func (TaskProgress) isEvent()      {}
+func (TaskDone) isEvent()          {}
+func (Result) isEvent()            {}
+func (RateLimits) isEvent()        {}
+func (Stderr) isEvent()            {}
+func (Exited) isEvent()            {}
+
+// Outbound is a message for the agent's stdin.
+type Outbound interface{ isOutbound() }
+
+// UserMessage starts (or queues) a turn. Without images the content is a plain string, which
+// claude reads as a slash command when it is one.
+type UserMessage struct {
+	Text   string
+	Images []Image
+}
+
+// Image is a picture attached to a UserMessage.
+type Image struct {
+	Media string // "image/png", "image/jpeg", "image/gif" or "image/webp"
+	Data  []byte
+}
+
+// Allow answers a PermissionRequest; Input is what the tool runs with (for AskUserQuestion it carries "answers").
+type Allow struct {
+	RequestID string
+	Input     map[string]any
+}
+
+// Deny answers a PermissionRequest with a refusal the model gets to read.
+type Deny struct {
+	RequestID string
+	Message   string
+}
+
+// Initialize asks the CLI about the session before the first turn (an Init comes only with a
+// turn); Commands answers it.
+type Initialize struct{ RequestID string }
+
+// Interrupt stops the turn in progress: the running tools are cancelled and a Result (an error)
+// ends the turn.
+type Interrupt struct{ RequestID string }
+
+// SetMode switches the permission mode ("default", "acceptEdits", "plan", …); ModeChanged confirms it,
+// ControlError refuses it.
+type SetMode struct {
+	RequestID string
+	Mode      string
+}
+
+// SetModel switches the model, as /model does ("haiku", "default", "claude-sonnet-5-5");
+// ModelChanged confirms it with the model it resolved to, ControlError refuses it.
+type SetModel struct {
+	RequestID string
+	Model     string
+}
+
+// SideQuestion asks the model beside the conversation, as /btw does: a turn in progress goes on,
+// and neither the question nor its answer joins the conversation. History holds the side
+// questions answered before, for follow-ups. SideAnswer answers it, ControlError refuses it.
+type SideQuestion struct {
+	RequestID string
+	Question  string
+	History   []SideQA
+}
+
+// SideQA is a side question answered.
+type SideQA struct{ Question, Response string }
+
+// Resume restarts the agent in a saved conversation (`claude --resume`). It never reaches stdin:
+// the session runs a new process, and nothing more is heard from the old one.
+type Resume struct{ SessionID string }
+
+func (UserMessage) isOutbound()  {}
+func (Allow) isOutbound()        {}
+func (Deny) isOutbound()         {}
+func (SetMode) isOutbound()      {}
+func (SetModel) isOutbound()     {}
+func (Initialize) isOutbound()   {}
+func (Interrupt) isOutbound()    {}
+func (SideQuestion) isOutbound() {}
+func (Resume) isOutbound()       {}
+
+// Parse decodes one stdout line. Lines it does not care about yield nothing.
+func Parse(line []byte) []Event {
+	var head struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(line, &head) != nil {
+		return nil
+	}
+	switch head.Type {
+	case "system":
+		return parseSystem(line)
+	case "stream_event":
+		return parseStreamEvent(line)
+	case "assistant":
+		return parseAssistant(line)
+	case "user":
+		return parseUser(line)
+	case "control_request":
+		return parseControlRequest(line)
+	case "result":
+		return parseResult(line)
+	case "rate_limit_event":
+		return parseRateLimits(line)
+	case "conversation_reset":
+		return []Event{Reset{}}
+	case "control_response":
+		return parseControlResponse(line)
+	}
+	return nil
+}
+
+func parseSystem(line []byte) []Event {
+	var head struct {
+		Subtype string `json:"subtype"`
+	}
+	if json.Unmarshal(line, &head) != nil {
+		return nil
+	}
+	switch head.Subtype {
+	case "init":
+		return parseInit(line)
+	case "status":
+		return parseStatus(line)
+	case "task_started":
+		return parseTaskStarted(line)
+	case "task_progress":
+		return parseTaskProgress(line)
+	case "task_notification", "task_updated":
+		return parseTaskDone(line)
+	}
+	return nil
+}
+
+func parseInit(line []byte) []Event {
+	var m struct {
+		SessionID      string      `json:"session_id"`
+		Model          string      `json:"model"`
+		Cwd            string      `json:"cwd"`
+		PermissionMode string      `json:"permissionMode"`
+		OutputStyle    string      `json:"output_style"`
+		Version        string      `json:"claude_code_version"`
+		Commands       []string    `json:"slash_commands"`
+		MCP            []MCPServer `json:"mcp_servers"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	return []Event{Init{SessionID: m.SessionID, Model: m.Model, Cwd: m.Cwd, PermissionMode: m.PermissionMode,
+		OutputStyle: m.OutputStyle, Version: m.Version, Commands: m.Commands, MCP: m.MCP}}
+}
+
+// parseStatus reports a permission mode change; other status lines ("requesting", …) yield nothing.
+func parseStatus(line []byte) []Event {
+	var m struct {
+		PermissionMode string `json:"permissionMode"`
+	}
+	if json.Unmarshal(line, &m) != nil || m.PermissionMode == "" {
+		return nil
+	}
+	return []Event{ModeChanged{Mode: m.PermissionMode}}
+}
+
+func parseTaskStarted(line []byte) []Event {
+	var m struct {
+		TaskID       string `json:"task_id"`
+		ToolUseID    string `json:"tool_use_id"`
+		Type         string `json:"task_type"`
+		Description  string `json:"description"`
+		WorkflowName string `json:"workflow_name"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	return []Event{TaskStarted{TaskID: m.TaskID, ToolUseID: m.ToolUseID, Type: m.Type,
+		Description: m.Description, WorkflowName: m.WorkflowName}}
+}
+
+func parseTaskProgress(line []byte) []Event {
+	var m struct {
+		TaskID      string            `json:"task_id"`
+		ToolUseID   string            `json:"tool_use_id"`
+		Description string            `json:"description"`
+		LastTool    string            `json:"last_tool_name"`
+		Workflow    []json.RawMessage `json:"workflow_progress"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	return []Event{TaskProgress{TaskID: m.TaskID, ToolUseID: m.ToolUseID, Description: m.Description,
+		LastTool: m.LastTool, Workflow: workflowItems(m.Workflow)}}
+}
+
+// workflowItems decodes workflow_progress. Entries of another type, or that do not decode, are skipped.
+func workflowItems(raw []json.RawMessage) []WorkflowItem {
+	var items []WorkflowItem
+	for _, r := range raw {
+		var w struct {
+			Type            string  `json:"type"`
+			Index           int     `json:"index"`
+			Title           string  `json:"title"`
+			Label           string  `json:"label"`
+			PhaseIndex      int     `json:"phaseIndex"`
+			PhaseTitle      string  `json:"phaseTitle"`
+			AgentID         string  `json:"agentId"`
+			State           string  `json:"state"`
+			Model           string  `json:"model"`
+			LastTool        string  `json:"lastToolName"`
+			LastToolSummary string  `json:"lastToolSummary"`
+			ResultPreview   string  `json:"resultPreview"`
+			Tokens          int     `json:"tokens"`
+			ToolCalls       int     `json:"toolCalls"`
+			DurationMS      float64 `json:"durationMs"`
+		}
+		if json.Unmarshal(r, &w) != nil {
+			continue
+		}
+		switch w.Type {
+		case "workflow_phase":
+			items = append(items, WorkflowItem{Phase: true, Index: w.Index, Title: w.Title})
+		case "workflow_agent":
+			items = append(items, WorkflowItem{
+				Index: w.Index, Title: w.Label, PhaseIndex: w.PhaseIndex, PhaseTitle: w.PhaseTitle,
+				AgentID: w.AgentID, State: w.State, Model: w.Model,
+				LastTool: w.LastTool, LastToolSummary: w.LastToolSummary, ResultPreview: w.ResultPreview,
+				Tokens: w.Tokens, ToolCalls: w.ToolCalls, DurationMS: int64(w.DurationMS),
+			})
+		}
+	}
+	return items
+}
+
+// parseTaskDone handles task_notification, and task_updated once its patch carries a final status.
+func parseTaskDone(line []byte) []Event {
+	var m struct {
+		Subtype   string `json:"subtype"`
+		TaskID    string `json:"task_id"`
+		ToolUseID string `json:"tool_use_id"`
+		Status    string `json:"status"`
+		Summary   string `json:"summary"`
+		Patch     struct {
+			Status string `json:"status"`
+		} `json:"patch"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	if m.Subtype == "task_updated" {
+		switch m.Patch.Status {
+		case "", "running", "pending":
+			return nil
+		}
+		m.Status = m.Patch.Status
+	}
+	return []Event{TaskDone{TaskID: m.TaskID, ToolUseID: m.ToolUseID, Status: m.Status, Summary: m.Summary}}
+}
+
+func parseStreamEvent(line []byte) []Event {
+	var m struct {
+		Parent string `json:"parent_tool_use_id"`
+		Event  struct {
+			Type         string `json:"type"`
+			ContentBlock struct {
+				Type string `json:"type"`
+			} `json:"content_block"`
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+			Message struct {
+				Model string `json:"model"`
+				Usage struct {
+					Input         int `json:"input_tokens"`
+					CacheRead     int `json:"cache_read_input_tokens"`
+					CacheCreation int `json:"cache_creation_input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		} `json:"event"`
+	}
+	if json.Unmarshal(line, &m) != nil || m.Parent != "" {
+		return nil
+	}
+	e := m.Event
+	switch {
+	case e.Type == "message_start":
+		u := e.Message.Usage
+		return []Event{Context{Model: e.Message.Model, Tokens: u.Input + u.CacheRead + u.CacheCreation}}
+	case e.Type == "content_block_start" && e.ContentBlock.Type == "thinking":
+		return []Event{Thinking{}}
+	case e.Type == "content_block_start" && e.ContentBlock.Type == "text":
+		return []Event{TextStart{}}
+	case e.Type == "content_block_delta" && e.Delta.Type == "text_delta":
+		return []Event{TextDelta{Text: e.Delta.Text}}
+	}
+	return nil
+}
+
+func parseAssistant(line []byte) []Event {
+	var m struct {
+		Parent  string `json:"parent_tool_use_id"`
+		Message struct {
+			Model   string `json:"model"`
+			Content []struct {
+				Type  string         `json:"type"`
+				ID    string         `json:"id"`
+				Name  string         `json:"name"`
+				Input map[string]any `json:"input"`
+				Text  string         `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	// The model's text arrives as stream events; the CLI's own replies (slash commands, API
+	// errors) come only here, from the "<synthetic>" model.
+	synthetic := m.Message.Model == "<synthetic>" && m.Parent == ""
+	var evs []Event
+	for _, c := range m.Message.Content {
+		switch {
+		case c.Type == "tool_use":
+			evs = append(evs, ToolUse{ID: c.ID, Name: c.Name, Input: c.Input, Parent: m.Parent})
+		case c.Type == "text" && synthetic && c.Text != "":
+			evs = append(evs, CLIReply{Text: c.Text})
+		}
+	}
+	return evs
+}
+
+func parseUser(line []byte) []Event {
+	var m struct {
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	var items []struct {
+		Type      string          `json:"type"`
+		ToolUseID string          `json:"tool_use_id"`
+		Content   json.RawMessage `json:"content"`
+		IsError   bool            `json:"is_error"`
+	}
+	// A plain string content is a prompt, not tool results: nothing to report.
+	if json.Unmarshal(m.Message.Content, &items) != nil {
+		return nil
+	}
+	var evs []Event
+	for _, it := range items {
+		if it.Type == "tool_result" {
+			evs = append(evs, ToolResult{ID: it.ToolUseID, Output: resultText(it.Content), IsError: it.IsError})
+		}
+	}
+	return evs
+}
+
+// resultText flattens tool_result content: a string, or a list of blocks whose text blocks are joined by newlines.
+func resultText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(raw, &blocks) // anything else counts as no output
+	var texts []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			texts = append(texts, b.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
+// parseControlResponse picks the slash commands out of the answer to Initialize, the model out of
+// the one to SetModel and the answer out of the one to SideQuestion; the answers to other requests
+// say nothing the UI needs.
+func parseControlResponse(line []byte) []Event {
+	var m struct {
+		Response struct {
+			Subtype   string `json:"subtype"`
+			RequestID string `json:"request_id"`
+			Error     string `json:"error"`
+			Response  struct {
+				Commands []struct {
+					Name         string   `json:"name"`
+					Description  string   `json:"description"`
+					ArgumentHint string   `json:"argumentHint"`
+					Aliases      []string `json:"aliases"`
+				} `json:"commands"`
+				Models []struct {
+					Value       string   `json:"value"`
+					Name        string   `json:"displayName"`
+					Description string   `json:"description"`
+					Resolved    string   `json:"resolvedModel"`
+					Efforts     []string `json:"supportedEffortLevels"`
+				} `json:"models"`
+				OutputStyles []string `json:"available_output_styles"`
+				Version      string   `json:"claude_code_version"`
+				Account      struct {
+					Email        string `json:"email"`
+					Subscription string `json:"subscriptionType"`
+				} `json:"account"`
+				Mode   string          `json:"current_permission_mode"`
+				Model  string          `json:"model"`    // the answer to a SetModel
+				Answer json.RawMessage `json:"response"` // the answer to a SideQuestion: a string
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	if m.Response.Subtype == "error" {
+		return []Event{ControlError{RequestID: m.Response.RequestID, Message: m.Response.Error}}
+	}
+	if md := m.Response.Response.Model; m.Response.Subtype == "success" && md != "" {
+		return []Event{ModelChanged{Model: md}}
+	}
+	var answer string
+	if json.Unmarshal(m.Response.Response.Answer, &answer) == nil && m.Response.Subtype == "success" {
+		return []Event{SideAnswer{RequestID: m.Response.RequestID, Text: answer}}
+	}
+	if m.Response.Subtype != "success" || m.Response.Response.Commands == nil {
+		return nil
+	}
+	r := m.Response.Response
+	ev := Commands{OutputStyles: r.OutputStyles, Version: r.Version}
+	for _, c := range r.Commands {
+		if c.Name != "" {
+			ev.List = append(ev.List, Command{Name: c.Name, Description: c.Description, Hint: c.ArgumentHint, Aliases: c.Aliases})
+		}
+	}
+	for _, md := range r.Models {
+		ev.Models = append(ev.Models, Model{Value: md.Value, Name: md.Name, Description: md.Description, Resolved: md.Resolved, Efforts: md.Efforts})
+	}
+	if a := r.Account; a.Email != "" {
+		ev.Account = strings.TrimSuffix(a.Email+" · "+a.Subscription, " · ")
+	}
+	evs := []Event{ev}
+	if mode := m.Response.Response.Mode; mode != "" { // as --permission-mode set it
+		evs = append(evs, ModeChanged{Mode: mode})
+	}
+	return evs
+}
+
+func parseControlRequest(line []byte) []Event {
+	var m struct {
+		RequestID string `json:"request_id"`
+		Request   struct {
+			Subtype   string         `json:"subtype"`
+			ToolName  string         `json:"tool_name"`
+			Input     map[string]any `json:"input"`
+			ToolUseID string         `json:"tool_use_id"`
+			AgentID   string         `json:"agent_id"`
+		} `json:"request"`
+	}
+	if json.Unmarshal(line, &m) != nil || m.Request.Subtype != "can_use_tool" {
+		return nil
+	}
+	r := m.Request
+	return []Event{PermissionRequest{RequestID: m.RequestID, ToolName: r.ToolName, Input: r.Input,
+		ToolUseID: r.ToolUseID, AgentID: r.AgentID}}
+}
+
+func parseResult(line []byte) []Event {
+	var m struct {
+		Subtype    string   `json:"subtype"`
+		IsError    bool     `json:"is_error"`
+		Result     string   `json:"result"`
+		Errors     []string `json:"errors"`
+		CostUSD    float64  `json:"total_cost_usd"`
+		DurationMS float64  `json:"duration_ms"`
+		ModelUsage map[string]struct {
+			ContextWindow int `json:"contextWindow"`
+		} `json:"modelUsage"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	var windows map[string]int
+	for model, u := range m.ModelUsage {
+		if u.ContextWindow > 0 {
+			if windows == nil {
+				windows = map[string]int{}
+			}
+			windows[model] = u.ContextWindow
+		}
+	}
+	text := m.Result
+	if text == "" {
+		text = strings.Join(m.Errors, "\n")
+	}
+	if text == "" {
+		text = m.Subtype
+	}
+	return []Event{Result{IsError: m.IsError, Text: text, CostUSD: m.CostUSD, DurationMS: int64(m.DurationMS), ContextWindows: windows}}
+}
+
+func parseRateLimits(line []byte) []Event {
+	type window struct {
+		Utilization float64 `json:"utilization"`
+		ResetsAt    int64   `json:"resetsAt"`
+	}
+	var m struct {
+		Info struct {
+			Windows struct {
+				FiveHour *window `json:"five_hour"`
+				SevenDay *window `json:"seven_day"`
+				Fable    *window `json:"seven_day_overage_included"`
+			} `json:"unifiedWindows"`
+		} `json:"rate_limit_info"`
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	conv := func(w *window) *Window {
+		if w == nil {
+			return nil
+		}
+		return &Window{Used: w.Utilization, ResetsAt: time.Unix(w.ResetsAt, 0)}
+	}
+	w := m.Info.Windows
+	ev := RateLimits{Session: conv(w.FiveHour), Week: conv(w.SevenDay), Fable: conv(w.Fable)}
+	if ev == (RateLimits{}) {
+		return nil
+	}
+	return []Event{ev}
+}
+
+// Encode renders one stdin line, without the trailing newline.
+func Encode(o Outbound) ([]byte, error) {
+	switch o := o.(type) {
+	case UserMessage:
+		var content any = o.Text
+		if len(o.Images) > 0 { // the pictures first, as the API advises
+			var blocks []map[string]any
+			for _, im := range o.Images {
+				blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{
+					"type": "base64", "media_type": im.Media, "data": im.Data, // []byte marshals as base64
+				}})
+			}
+			if o.Text != "" { // the API refuses an empty text block
+				blocks = append(blocks, map[string]any{"type": "text", "text": o.Text})
+			}
+			content = blocks
+		}
+		return json.Marshal(map[string]any{
+			"type":    "user",
+			"message": map[string]any{"role": "user", "content": content},
+		})
+	case Allow:
+		input := o.Input
+		if input == nil {
+			input = map[string]any{} // the CLI expects an object, not null
+		}
+		return controlResponse(o.RequestID, map[string]any{"behavior": "allow", "updatedInput": input})
+	case Deny:
+		return controlResponse(o.RequestID, map[string]any{"behavior": "deny", "message": o.Message})
+	case Initialize:
+		return json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": o.RequestID,
+			"request":    map[string]any{"subtype": "initialize"},
+		})
+	case Interrupt:
+		return json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": o.RequestID,
+			"request":    map[string]any{"subtype": "interrupt"},
+		})
+	case SetMode:
+		return json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": o.RequestID,
+			"request":    map[string]any{"subtype": "set_permission_mode", "mode": o.Mode},
+		})
+	case SetModel:
+		return json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": o.RequestID,
+			"request":    map[string]any{"subtype": "set_model", "model": o.Model},
+		})
+	case SideQuestion:
+		history := []map[string]string{} // the CLI wants an array, not null
+		for _, h := range o.History {
+			history = append(history, map[string]string{"question": h.Question, "response": h.Response})
+		}
+		return json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": o.RequestID,
+			"request":    map[string]any{"subtype": "side_question", "question": o.Question, "history": history},
+		})
+	}
+	return nil, fmt.Errorf("protocol: cannot encode %T", o)
+}
+
+func controlResponse(requestID string, response map[string]any) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": requestID,
+			"response":   response,
+		},
+	})
+}

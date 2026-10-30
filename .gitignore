@@ -1,0 +1,12 @@
+# Binaries
+/claudit
+*.test
+
+# macOS
+.DS_Store
+
+# Claude Code's local state
+.claude/
+
+# Release builds (make dist)
+/dist/

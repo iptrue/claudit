@@ -1,0 +1,472 @@
+package ui
+
+import (
+	"cmp"
+	"fmt"
+	"maps"
+	"math"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pixelbender/claudit/internal/ide"
+	"github.com/pixelbender/claudit/internal/ideview"
+	"github.com/pixelbender/claudit/internal/protocol"
+	"github.com/pixelbender/claudit/internal/transcript"
+)
+
+// pollEvery is how often the transcripts of running workflows are read.
+const pollEvery = 250 * time.Millisecond
+
+// crew is what the model tracks about the agents beyond ide.Agent.
+type crew struct {
+	keys     map[string]string           // task id or agent id → agent key
+	slots    map[string]string           // "<workflow key>#<phase>.<index>" → key of that workflow agent
+	calls    map[string]protocol.ToolUse // tool calls waiting for their result, workflow agents' too
+	activity map[string]string           // agent key → the Activity copied from workflow progress
+	tailers  []tailer                    // transcripts of the running workflows
+	polled   time.Time                   // last poll of the tailers
+	denied   map[string]bool             // tool calls the user denied: their failure is no news
+	named    int                         // subagents named so far
+}
+
+// tailer follows the transcript dir of one workflow.
+type tailer struct {
+	workflow string // key of the workflow node
+	t        *transcript.Tailer
+}
+
+func newCrew() crew {
+	return crew{
+		keys:     map[string]string{},
+		slots:    map[string]string{},
+		calls:    map[string]protocol.ToolUse{},
+		activity: map[string]string{},
+		denied:   map[string]bool{},
+	}
+}
+
+// agentByID finds the agent behind a task id or an agent id; nil when unknown.
+func (m *Model) agentByID(id string) *ide.Agent {
+	if id == "" {
+		return nil
+	}
+	if k, ok := m.crew.keys[id]; ok {
+		id = k
+	}
+	return m.Sim.FindAgent(id)
+}
+
+// subagentNames name the subagents in the order they start; past the last, the names come round
+// again with a number.
+var subagentNames = []string{"Kevin", "Stuart", "Bob", "Dave", "Jerry", "Carl", "Phil", "Tim", "Mark", "Jorge", "Otto", "Norbert"}
+
+// addAgent registers a new agent with the sim; a subagent or a workflow says hello with a toast. A
+// subagent gets a name of its own; name, its task, goes in the toast.
+func (m *Model) addAgent(key string, kind ide.AgentKind, parent, name string) *ide.Agent {
+	a := m.Sim.Agent(key, kind)
+	a.Parent, a.Name = parent, name
+	switch kind {
+	case ide.Subagent:
+		n := m.crew.named
+		m.crew.named++
+		a.Name = subagentNames[n%len(subagentNames)]
+		if n >= len(subagentNames) {
+			a.Name += " " + strconv.Itoa(n/len(subagentNames)+1)
+		}
+		if name != "" && name != "agent" {
+			m.toast(ToastInfo, a.Color, "◇ %s started · %s", a.Name, name)
+		} else {
+			m.toast(ToastInfo, a.Color, "◇ %s started", a.Name)
+		}
+	case ide.Workflow:
+		m.toast(ToastInfo, a.Color, "▣ workflow %s started", cmp.Or(name, "workflow"))
+	}
+	return a
+}
+
+// failing are the tools whose failure is news: a command that broke, an edit that did not apply.
+var failing = map[string]bool{"Bash": true, "Edit": true, "Write": true, "NotebookEdit": true}
+
+// toolFailed tells about a failed call of a's in a toast.
+func (m *Model) toolFailed(a *ide.Agent, id, tool, output string) {
+	if a == nil || !failing[tool] || m.crew.denied[id] {
+		return
+	}
+	out := strings.TrimSpace(strings.NewReplacer("<tool_use_error>", "", "</tool_use_error>", "").Replace(output))
+	who := ""
+	if a.Kind != ide.Main {
+		who = a.Name + " · "
+	}
+	m.toast(ToastErr, a.Color, "%s%s: %s", who, tool, cmp.Or(firstLineOf(out), "failed"))
+}
+
+// toolUse handles a tool call from the stream: the main agent's or a subagent's.
+func (m *Model) toolUse(ev protocol.ToolUse, now time.Time) {
+	key := cmp.Or(ev.Parent, "main")
+	a := m.Sim.FindAgent(key)
+	if a == nil { // a subagent whose start we missed
+		a = m.addAgent(key, ide.Subagent, "main", "agent")
+		a.Started = now
+	}
+	switch ev.Name {
+	case "Agent", "Task":
+		if m.Sim.FindAgent(ev.ID) == nil {
+			name := cmp.Or(inputString(ev.Input, "description"), inputString(ev.Input, "subagent_type"), "agent")
+			m.addAgent(ev.ID, ide.Subagent, key, name).Started = now
+		}
+	case "Workflow":
+		if m.Sim.FindAgent(ev.ID) == nil {
+			m.addAgent(ev.ID, ide.Workflow, key, cmp.Or(workflowName(inputString(ev.Input, "script")), "workflow"))
+		}
+	}
+	m.crew.calls[ev.ID] = ev
+	m.Sim.ToolUse(key, ev.ID, ev.Name, ev.Input)
+	a.ToolCalls++
+}
+
+// metaName finds `name: '…'` in the `meta` object of a workflow script, before any nested object.
+var metaName = regexp.MustCompile("\\bmeta\\s*=\\s*\\{[^{}]*?\\bname\\s*:\\s*['\"`]([^'\"`\\n]+)")
+
+func workflowName(script string) string {
+	if s := metaName.FindStringSubmatch(script); s != nil {
+		return s[1]
+	}
+	return ""
+}
+
+// toolResult handles a tool result from the stream.
+func (m *Model) toolResult(ev protocol.ToolResult, now time.Time) {
+	call := m.crew.calls[ev.ID]
+	delete(m.crew.calls, ev.ID)
+	if ev.IsError {
+		m.toolFailed(m.Sim.FindAgent(cmp.Or(call.Parent, "main")), ev.ID, call.Name, ev.Output)
+	}
+	m.Sim.ToolResult(ev.ID, ev.Output, ev.IsError)
+	switch call.Name {
+	case "Agent", "Task", "Workflow":
+		// A background agent returns at once and TaskDone ends it; an error means it never ran.
+		if a := m.Sim.FindAgent(ev.ID); a != nil && ev.IsError {
+			m.wrapUp(a, ide.Failed, now)
+		}
+		if dir, ok := transcript.Dir(ev.Output); ok && call.Name == "Workflow" && !ev.IsError {
+			m.crew.tailers = append(m.crew.tailers, tailer{workflow: ev.ID, t: transcript.New(dir)})
+			if a := m.Sim.FindAgent(ev.ID); a != nil && (a.Status == ide.Done || a.Status == ide.Failed) {
+				m.wrapUp(a, a.Status, now) // it ended before its launch was reported: read it once
+			}
+		}
+	}
+}
+
+func (m *Model) taskStarted(ev protocol.TaskStarted, now time.Time) {
+	kind, name := ide.Subagent, "agent"
+	switch ev.Type {
+	case "local_agent":
+	case "local_workflow":
+		kind, name = ide.Workflow, "workflow"
+	default: // background shells and the like are not agents
+		return
+	}
+	key := cmp.Or(ev.ToolUseID, ev.TaskID)
+	m.crew.keys[ev.TaskID] = key
+	a := m.Sim.FindAgent(key)
+	if a == nil {
+		a = m.addAgent(key, kind, "main", cmp.Or(ev.WorkflowName, ev.Description))
+	}
+	if kind == ide.Workflow && ev.WorkflowName != "" {
+		a.Name = ev.WorkflowName
+	}
+	if a.Name == "" {
+		a.Name = cmp.Or(ev.Description, name)
+	}
+	a.Status = ide.Running
+	if a.Started.IsZero() {
+		a.Started = now
+	}
+}
+
+// taskAgent finds the subagent or workflow a task event is about; nil when unknown.
+func (m *Model) taskAgent(taskID, toolUseID string) *ide.Agent {
+	a := m.agentByID(taskID)
+	if a == nil {
+		a = m.agentByID(toolUseID)
+	}
+	if a == nil || a.Kind != ide.Subagent && a.Kind != ide.Workflow {
+		return nil
+	}
+	return a
+}
+
+func (m *Model) taskProgress(ev protocol.TaskProgress, now time.Time) {
+	wf := m.taskAgent(ev.TaskID, ev.ToolUseID)
+	if wf == nil || wf.Kind != ide.Workflow {
+		return
+	}
+	for _, it := range ev.Workflow {
+		if !it.Phase {
+			m.workflowAgent(wf.Key, it, now)
+		}
+	}
+}
+
+// workflowAgent updates the agent of one workflow_agent progress item, adding it when new.
+// A queued agent has no id yet: it lives under a placeholder key until the id is known.
+func (m *Model) workflowAgent(wf string, it protocol.WorkflowItem, now time.Time) {
+	slot := fmt.Sprintf("%s#%d.%d", wf, it.PhaseIndex, it.Index)
+	key := cmp.Or(m.crew.slots[slot], slot)
+	if it.AgentID != "" && key != it.AgentID {
+		if m.Sim.FindAgent(it.AgentID) == nil {
+			m.Sim.Rekey(key, it.AgentID)
+		} else {
+			m.dropAgent(key, it.AgentID) // its transcript showed up first: the placeholder is a duplicate
+		}
+		key = it.AgentID
+	}
+	m.crew.slots[slot] = key
+	a := m.Sim.FindAgent(key)
+	if a == nil {
+		a = m.addAgent(key, ide.WorkflowAgent, wf, "")
+	}
+	a.Name = cmp.Or(it.Title, a.Name)
+	a.Phase, a.Tokens, a.ToolCalls = it.PhaseTitle, it.Tokens, it.ToolCalls
+	switch {
+	case it.AgentID == "":
+		a.Status = ide.Queued
+	case it.State == "done":
+		m.finish(a, ide.Done, now)
+	case slices.Contains([]string{"error", "failed", "killed", "cancelled"}, it.State):
+		m.finish(a, ide.Failed, now)
+	default:
+		a.Status = ide.Running
+		if a.Started.IsZero() {
+			a.Started = now
+		}
+		// Progress tells what an agent does when the sim has nothing better: no transcript, or idle.
+		if it.LastTool != "" && (a.Activity == "" || a.Activity == m.crew.activity[key]) {
+			a.Activity = strings.TrimSpace(it.LastTool + " " + firstLineOf(it.LastToolSummary))
+			m.crew.activity[key] = a.Activity
+		}
+	}
+}
+
+// dropAgent removes an agent that never did anything from the IDE state: the agent to stands for
+// it, and takes over the camera pinned on it, the panel selection, and its hotkey when lower (the
+// other one is free again: no gap).
+func (m *Model) dropAgent(key, to string) {
+	st := m.Sim.State()
+	if a, b := m.Sim.FindAgent(key), m.Sim.FindAgent(to); a != nil && b != nil && a.Hotkey != 0 && (b.Hotkey == 0 || a.Hotkey < b.Hotkey) {
+		b.Hotkey = a.Hotkey
+	}
+	if st.Camera == key && st.Pinned {
+		m.Sim.Pin(to)
+	}
+	if m.PanelSel == key {
+		m.PanelSel = to
+	}
+	st.Agents = slices.DeleteFunc(st.Agents, func(a *ide.Agent) bool { return a.Key == key })
+}
+
+func (m *Model) taskDone(ev protocol.TaskDone, now time.Time) {
+	a := m.taskAgent(ev.TaskID, ev.ToolUseID)
+	if a == nil {
+		return
+	}
+	status := ide.Failed
+	if ev.Status == "completed" {
+		status = ide.Done
+	}
+	m.wrapUp(a, status, now)
+}
+
+// wrapUp ends a subagent, or a workflow with its agents after a last read of their transcripts.
+// The calls they left open end too: nothing will report on them any more.
+func (m *Model) wrapUp(a *ide.Agent, status ide.AgentStatus, now time.Time) {
+	if a.Kind == ide.Workflow {
+		if i := slices.IndexFunc(m.crew.tailers, func(t tailer) bool { return t.workflow == a.Key }); i >= 0 {
+			m.follow(m.crew.tailers[i], now)
+			m.crew.tailers = slices.Delete(m.crew.tailers, i, i+1)
+		}
+		for _, b := range m.Sim.State().Agents {
+			if b.Parent == a.Key && (b.Status == ide.Running || b.Status == ide.Queued) {
+				m.finish(b, status, now)
+			}
+		}
+	}
+	m.finish(a, status, now)
+	m.abandon(func(key string) bool {
+		b := m.Sim.FindAgent(key)
+		return b != nil && (b == a || b.Parent == a.Key)
+	})
+}
+
+// abandon fails the open calls of the agents gone picks by key: their results will never come.
+func (m *Model) abandon(gone func(key string) bool) {
+	for _, id := range slices.Sorted(maps.Keys(m.crew.calls)) {
+		if gone(cmp.Or(m.crew.calls[id].Parent, "main")) {
+			m.Sim.ToolResult(id, "", true)
+			delete(m.crew.calls, id)
+		}
+	}
+}
+
+// finish ends an agent once; later reports of its end change nothing.
+func (m *Model) finish(a *ide.Agent, status ide.AgentStatus, now time.Time) {
+	if a.Status == ide.Done || a.Status == ide.Failed {
+		return
+	}
+	a.Status, a.Ended = status, now
+	if a.Activity != "" && a.Activity == m.crew.activity[a.Key] {
+		a.Activity = ""
+	}
+	if a.Kind == ide.Subagent || a.Kind == ide.Workflow {
+		took := ""
+		if !a.Started.IsZero() {
+			took = " · " + now.Sub(a.Started).Truncate(time.Second).String() // as the agents panel counts
+		}
+		if status == ide.Done {
+			m.toast(ToastOK, a.Color, "%s finished%s", a.Name, took)
+		} else {
+			m.toast(ToastErr, a.Color, "%s failed%s", a.Name, took)
+		}
+	}
+}
+
+// follow plays what the agents of a workflow did since the last poll of its transcripts.
+func (m *Model) follow(t tailer, now time.Time) {
+	for _, ev := range t.t.Poll() {
+		switch ev := ev.(type) {
+		case protocol.ToolUse:
+			if m.Sim.FindAgent(ev.Parent) == nil { // not in the progress yet
+				m.addAgent(ev.Parent, ide.WorkflowAgent, t.workflow, ev.Parent[:min(7, len(ev.Parent))]).Started = now
+			}
+			m.Sim.ToolUse(ev.Parent, ev.ID, ev.Name, ev.Input)
+			m.crew.calls[ev.ID] = ev
+		case protocol.ToolResult:
+			call, ok := m.crew.calls[ev.ID]
+			delete(m.crew.calls, ev.ID)
+			if ok && ev.IsError {
+				m.toolFailed(m.Sim.FindAgent(call.Parent), ev.ID, call.Name, ev.Output)
+			}
+			m.Sim.ToolResult(ev.ID, ev.Output, ev.IsError)
+		}
+	}
+}
+
+func (m *Model) tick(now time.Time) {
+	m.Now = now
+	if len(m.crew.tailers) > 0 && now.Sub(m.crew.polled) >= pollEvery {
+		m.crew.polled = now
+		for _, t := range m.crew.tailers {
+			m.follow(t, now)
+		}
+	}
+	m.replayAllow(now)
+	m.Sim.Tick(now)
+	m.Status.Frame = int(now.UnixMilli() / 100)
+	m.expireToasts(now)
+}
+
+// exited ends everything still running: claude is gone, nothing will report on it any more.
+func (m *Model) exited(now time.Time) {
+	m.abandon(func(string) bool { return true })
+	for _, a := range m.Sim.State().Agents {
+		if a.Kind != ide.Main && (a.Status == ide.Running || a.Status == ide.Queued) {
+			m.finish(a, ide.Failed, now)
+		}
+	}
+	m.crew.tailers = nil
+}
+
+// sync derives the rest of the UI state from the agents after every message: the one automatic
+// switch of the left panel to the agents tree, the status of main, and the camera in the status line.
+func (m *Model) sync() {
+	st := m.Sim.State()
+	// The left column shows the agents while others than main are at work, the files otherwise.
+	m.Panel = ideview.Files
+	if slices.ContainsFunc(st.Agents, func(a *ide.Agent) bool {
+		return a.Kind != ide.Main && (a.Status == ide.Running || a.Status == ide.Queued)
+	}) {
+		m.Panel = ideview.Agents
+	}
+	m.PanelFocus = m.PanelFocus && m.Panel == ideview.Agents
+	st.Agents[0].Status = ide.Done // main between turns
+	if m.Status.Busy {
+		st.Agents[0].Status = ide.Running
+	}
+	m.syncSuggest()
+	if m.Popup != m.shownPopup {
+		m.shownPopup, m.popupAt = m.Popup, m.Now
+		m.notice = popupNotice(m.Popup)
+		m.streak = m.Popup != nil && !m.typedAt.IsZero() && m.clock().Sub(m.typedAt) < popupGrace
+	}
+	m.Sim.Ask(popupAgent(m.Popup))
+	switch {
+	case !m.Status.Busy:
+		m.turnAt, m.Status.Elapsed = time.Time{}, ""
+	case m.turnAt.IsZero():
+		m.turnAt = m.Now
+	default:
+		m.Status.Elapsed = elapsed(m.Now.Sub(m.turnAt))
+	}
+	m.Status.Agents = 0
+	for _, a := range st.Agents {
+		if (a.Kind == ide.Subagent || a.Kind == ide.WorkflowAgent) && a.Status == ide.Running {
+			m.Status.Agents++
+		}
+	}
+	m.Status.Usage = usage(m.limits, m.cost, m.Now)
+	m.Status.Context = 0
+	if w := m.windows[m.context.Model]; w > 0 {
+		m.Status.Context = float64(m.context.Tokens) / float64(w)
+	}
+	m.Status.Camera, m.Status.CameraColor = "", 0
+	a := m.Sim.FindAgent(st.Camera)
+	if a == nil || len(st.Agents) == 1 { // with main alone there is nothing to choose between
+		return
+	}
+	cam := "auto → " + a.Name
+	if st.Pinned {
+		cam = "pinned · " + a.Name
+	}
+	if a.Activity != "" {
+		cam += " (" + a.Activity + ")"
+	}
+	m.Status.Camera, m.Status.CameraColor = cam, a.Color
+}
+
+// usage formats the use of the rate-limit windows: "5h 9% · 7d 58% · fable 3%". A window past
+// its reset is left out, as in Claude Code: the next response reports it anew. A session that has
+// no windows (an API key) shows its cost instead: "$0.0123".
+func usage(l protocol.RateLimits, cost float64, now time.Time) string {
+	if l == (protocol.RateLimits{}) {
+		if cost > 0 {
+			return fmt.Sprintf("$%.4f", cost)
+		}
+		return ""
+	}
+	var parts []string
+	for _, w := range []struct {
+		name string
+		w    *protocol.Window
+	}{{"5h", l.Session}, {"7d", l.Week}, {"fable", l.Fable}} {
+		if w.w != nil && w.w.ResetsAt.After(now) {
+			// Rounded first, so that 0.58 is 58% and not 57.
+			parts = append(parts, fmt.Sprintf("%s %d%%", w.name, int(math.Round(w.w.Used*1e4)/100)))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// elapsed formats a running time for the status line: "7s", "1m05s", "1h02m".
+func elapsed(d time.Duration) string {
+	d = max(d, 0).Truncate(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", d/time.Second)
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", d/time.Minute, d%time.Minute/time.Second)
+	}
+	return fmt.Sprintf("%dh%02dm", d/time.Hour, d%time.Hour/time.Minute)
+}
