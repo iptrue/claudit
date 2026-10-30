@@ -345,7 +345,7 @@ func TestExplorerSelection(t *testing.T) {
 }
 
 // File names take the colour of their type as a pastel, with no icon, never bold; once an agent
-// changed a file its name is the same colour, brighter, and a yellow asterisk follows it.
+// changed a file its name keeps that colour and a yellow asterisk follows it.
 func TestFileColors(t *testing.T) {
 	st := sampleState()
 	goC, mdC := fileColor("main.go"), fileColor("README.md")
@@ -356,16 +356,15 @@ func TestFileColors(t *testing.T) {
 		t.Errorf("by name or upper case: no colour")
 	}
 	pastel := func(c color.Color) color.Color { return theme.Mix(c, theme.Bright, 0.4) }
-	calm := func(c color.Color) color.Color { return theme.Mix(pastel(c), theme.Bg, 0.45) }
 	out := left(render(st, 100, 20), 100)
-	if s := ansi.Strip(out); strings.Contains(s, "▪") || strings.Contains(s, "*") || !styled(out, "main.go", sgr("38", calm(goC))) ||
-		!styled(out, "README.md", sgr("38", calm(mdC))) || !styled(out, "src", sgr("38", theme.Fg)) || !styled(out, "▾ ", sgr("38", theme.Dim)) {
+	if s := ansi.Strip(out); strings.Contains(s, "▪") || strings.Contains(s, "*") || !styled(out, "main.go", sgr("38", pastel(goC))) ||
+		!styled(out, "README.md", sgr("38", pastel(mdC))) || !styled(out, "src", sgr("38", theme.Fg)) || !styled(out, "▾ ", sgr("38", theme.Dim)) {
 		t.Errorf("files not in their type's colour, dirs not neutral, or an asterisk on nothing changed:\n%s", out)
 	}
 	st.Edited = map[string]bool{st.Root + "/src/main.go": true}
 	out = left(render(st, 100, 20), 100)
 	if !strings.Contains(ansi.Strip(lineWith(out, "main.go")), "main.go *") || !styled(out, " *", sgr("38", theme.Yellow)) ||
-		strings.Count(ansi.Strip(out), "*") != 1 || !styled(out, "main.go", sgr("38", calm(goC))) || !styled(out, "README.md", sgr("38", calm(mdC))) {
+		strings.Count(ansi.Strip(out), "*") != 1 || !styled(out, "main.go", sgr("38", pastel(goC))) || !styled(out, "README.md", sgr("38", pastel(mdC))) {
 		t.Errorf("a changed file changed colour or has no yellow asterisk, or an unchanged one changed:\n%s", out)
 	}
 	// Squeezed, the name gives way to the asterisk.

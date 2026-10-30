@@ -256,14 +256,13 @@ func treeSel(st *ide.State, cam *ide.Agent) int {
 	return slices.IndexFunc(st.Tree, func(r ide.TreeRow) bool { return r.Path == cam.TreeSel })
 }
 
-// fileTint is the colour of a file's name in the explorer: its type's colour as a calm pastel,
-// changed or not.
+// fileTint is the colour of a file's name in the explorer: its type's colour as a pastel,
+// changed or not; an unknown type is as plain as a folder.
 func fileTint(path string) color.Color {
-	c := theme.Fg
 	if t := fileColor(path); t != nil {
-		c = theme.Mix(t, theme.Bright, 0.4)
+		return theme.Mix(t, theme.Bright, 0.4)
 	}
-	return theme.Mix(c, theme.Bg, 0.45) // still a step brighter than the hidden ones (theme.Dim)
+	return theme.Fg
 }
 
 // termPrompt is every terminal's prompt: the pane's title tells whose it is.
