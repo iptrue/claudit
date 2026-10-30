@@ -8,9 +8,10 @@ in its own editor and terminal.
 
 ## Install
 
-You need Claude Code installed as `claude` and logged in, and Go 1.26 or newer.
+You need Claude Code installed as `claude` and logged in. Go 1.26 or newer is needed only for `go install`.
 
 ```sh
+brew install pixelbender/tap/claudit                # macOS and Linux
 go install github.com/pixelbender/claudit@latest    # puts claudit in $(go env GOPATH)/bin
 ```
 
