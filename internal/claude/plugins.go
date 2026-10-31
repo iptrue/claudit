@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 )
 
 // claude -p cannot run /plugins: claudit manages the plugins through `claude plugin`.
@@ -63,6 +64,7 @@ func parsePlugins(data []byte, dir string) ([]Plugin, []Offer, error) {
 func PluginCommand(dir string, args ...string) (string, error) {
 	cmd := exec.Command("claude", append([]string{"plugin"}, args...)...)
 	cmd.Dir = dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // git asking for a password fails instead of drawing over the TUI
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

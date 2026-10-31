@@ -27,8 +27,6 @@ var (
 	fgStyle   = lipgloss.NewStyle().Foreground(theme.Fg)
 	dimStyle  = lipgloss.NewStyle().Foreground(theme.Dim)
 	okStyle   = lipgloss.NewStyle().Foreground(theme.OK)
-	limeStyle = lipgloss.NewStyle().Foreground(theme.Lime)
-	cmdStyle  = lipgloss.NewStyle().Foreground(theme.Bright) // what is typed in a terminal
 	errStyle  = lipgloss.NewStyle().Foreground(theme.Err)
 	hunkStyle = lipgloss.NewStyle().Foreground(theme.Violet) // a diff's "@@ -1,2 +1,3 @@"
 
@@ -51,21 +49,10 @@ func Render(st *ide.State, o Options, width, height int) string {
 		left = explorerPane(st, cam, o, ew, height)
 	}
 	lines := slices.Clone(left)
-	cols := columns(st, cam, o, rw)
-	solo := len(cols) > 1 && cols[0].agent == cols[1].agent // one agent's file beside its terminal
-	for i, cw := range columnWidths(rw, len(cols)) {
-		c := cols[i]
-		pane := workplace(st, c, o, cw, height)
-		switch {
-		case len(cols) == 1:
-			pane = wipe(pane, cutAt(st, cam), o.Now, agentColor(cam), cw)
-		case solo: // both stay on screen as it turns between them: only a cut wipes them
-			pane = wipe(pane, st.CameraAt, o.Now, agentColor(cam), cw)
-		default:
-			pane = wipe(pane, c.agent.FocusAt, o.Now, agentColor(c.agent), cw)
-		}
-		for j := range lines {
-			lines[j] += pane[j]
+	cols := columns(st, cam, o, rw, height)
+	for i, r := range tiles(len(cols), rw, height) {
+		for j, l := range workplace(st, cols[i], o, r.Dx(), r.Dy()) {
+			lines[r.Min.Y+j] += l
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -84,7 +71,7 @@ func AgentAt(st *ide.State, o Options, width, height, x, y int) string {
 	case y < 0 || y >= height || x < 0 || x >= width:
 		return ""
 	case x >= ew:
-		if c, _, _, ok := columnAt(st, o, width, x); ok {
+		if c, _, ok := columnAt(st, o, width, height, x, y); ok {
 			return c.agent.Key
 		}
 		return ""
@@ -121,32 +108,24 @@ func TextAt(st *ide.State, o Options, width, height, x, y int) image.Rectangle {
 	if o.Panel == Agents {
 		x0, w = 2, textWidth(ew-2)
 	}
-	if c, cx, cw, ok := columnAt(st, o, width, x); ok {
-		iw, _ := inner(cw, height)
-		x0, w = cx+2, textWidth(iw)
+	y0, y1 := 1, height-1
+	if c, t, ok := columnAt(st, o, width, height, x, y); ok {
+		iw, _ := inner(t.Dx(), t.Dy())
+		x0, w, y0, y1 = t.Min.X+2, textWidth(iw), t.Min.Y+1, t.Max.Y-1
 		if c.pane == ide.Editor {
 			tab := shownTab(st, c.agent)
 			if tab == nil {
 				return image.Rectangle{}
 			}
 			_, _, tw := editorText(tab, c.agent, iw)
-			x0, w = cx+1+iw-tw, tw
+			x0, w = t.Min.X+1+iw-tw, tw
 		}
 	}
-	r := image.Rect(x0, 1, x0+max(w, 0), max(height-1, 1))
+	r := image.Rect(x0, y0, x0+max(w, 0), max(y1, y0))
 	if !image.Pt(x, y).In(r) {
 		return image.Rectangle{}
 	}
 	return r
-}
-
-// cutAt is when the right column last changed what it shows: the camera cut to another agent, or
-// its agent turned between the editor and the terminal.
-func cutAt(st *ide.State, cam *ide.Agent) time.Time {
-	if cam.FocusAt.After(st.CameraAt) {
-		return cam.FocusAt
-	}
-	return st.CameraAt
 }
 
 // camera is the agent the view follows: the one keyed st.Camera, else the first agent, else an
@@ -179,15 +158,6 @@ func agentColor(a *ide.Agent) color.Color {
 	return theme.Agents[(a.Color%n+n)%n]
 }
 
-// border is the frame colour of pane: BorderFocus where the agent works, Border elsewhere. Whose
-// pane it is, its title says in the agent's colour.
-func border(cam *ide.Agent, pane ide.Pane) color.Color {
-	if cam.Focus == pane {
-		return theme.BorderFocus
-	}
-	return theme.Border
-}
-
 func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	iw, ih := inner(w, h)
 	sel, lit := treeSel(st, cam), cam.Focus == ide.Explorer
@@ -210,7 +180,8 @@ func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 			base = base.Background(theme.SelBgDim)
 		}
 		indent := strings.Repeat(" ", 2*max(row.Depth, 0))
-		// A directory's marker is its fold state; a file has none: a changed one, a yellow asterisk after it.
+		// A directory's marker is its fold state; a file has none. A changed file gets a yellow
+		// asterisk after it; a changed folder, a yellow name.
 		marker, nc := "  ", fileTint(row.Path)
 		if row.Dir {
 			marker, nc = "▸ ", theme.Fg
@@ -218,12 +189,16 @@ func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 				marker = "▾ "
 			}
 		}
-		if strings.HasPrefix(row.Name, ".") {
-			nc = theme.Dim // hidden: .git, .env and the like
+		if strings.HasPrefix(row.Name, ".") || row.Ignored {
+			nc = theme.Dim // hidden: .git, .env and the like; or ignored by git
 		}
 		room := iw - ansi.StringWidth(indent+marker)
 		mark := ""
-		if st.Edited[row.Path] {
+		switch {
+		case !changed(st, row):
+		case row.Dir:
+			nc = theme.Yellow // an agent changed a file in it
+		default:
 			mark = " *" // an agent changed it
 		}
 		name := clip(row.Name, room-len(mark), "…") // the name gives way to the mark
@@ -233,11 +208,20 @@ func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 			base.Foreground(nc).Render(name) + base.Foreground(theme.Yellow).Render(mark) + base.Render(pad)
 	}
 	title := " " + fgStyle.Render(clip(filepath.Base(st.Root), iw, "")) + " "
-	bc := border(cam, ide.Explorer)
-	if o.Focused {
-		bc = theme.BorderFocus
+	return frame(w, h, theme.Border, title, rows)
+}
+
+// changed reports whether an agent changed the file of row r, or a file under its folder.
+func changed(st *ide.State, r ide.TreeRow) bool {
+	if !r.Dir {
+		return st.Edited[r.Path]
 	}
-	return frame(w, h, bc, title, rows)
+	for p, ok := range st.Edited {
+		if ok && strings.HasPrefix(p, r.Path+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // treeSel is the explorer row cam points at; -1 for none.
@@ -270,13 +254,14 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	fw, ih := inner(w, h)
 	iw := textWidth(fw)
 	t := &cam.Term
-	prompt := limeStyle.Render(clip(termPrompt, iw, ""))
+	prompt := lipgloss.NewStyle().Foreground(agentColor(cam)).Render(clip(termPrompt, iw, ""))
 	back := o.Scroll[termKey(cam.Key)]
 	// A row of a line, styled only once it is in the window: scrolled far back, styling every row
 	// below it would cost a frame its time.
 	type row struct {
 		line *ide.TermLine // nil for the live prompt line
 		j    int           // the row's place among its line's
+		at   int           // the runes of its line before it
 		text string
 	}
 	var rows []row
@@ -288,8 +273,10 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 		if l.Kind == ide.Command || l.Kind == ide.More {
 			pw = ansi.StringWidth(prompt)
 		}
+		at := 0
 		for j, text := range wrap(l.Text, iw-pw, iw) {
-			rows = append(rows, row{l, j, text})
+			rows = append(rows, row{l, j, at, text})
+			at += utf8.RuneCountInString(text)
 		}
 	}
 	live := fgStyle.Render(spinner[t.Spinner%len(spinner)])
@@ -297,15 +284,20 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 		live += " " + dimStyle.Render(ran)
 	}
 	if !t.Running {
+		// The caret is a solid block while its agent types, a spin frame while it works otherwise,
+		// else none; in its colour.
 		var c string
-		if working(cam, o) { // the caret is a spin frame while its agent works, else none; lime as the prompt
-			c = limeStyle.Render(spinFrame(o.Now))
+		switch {
+		case typing(cam, o):
+			c = lipgloss.NewStyle().Background(agentColor(cam)).Render(" ")
+		case working(cam, o):
+			c = lipgloss.NewStyle().Foreground(agentColor(cam)).Render(spinFrame(o.Now))
 		}
 		part := ide.Command
 		if n := len(t.Lines); n > 0 && (t.Lines[n-1].Kind == ide.Command || t.Lines[n-1].Kind == ide.More) {
 			part = ide.More // the input goes on with the command above
 		}
-		live = lead(prompt, part) + cmdStyle.Render(tail(t.Input, iw-ansi.StringWidth(prompt)-1)) + c
+		live = lead(prompt, part) + commandLine(tail(t.Input, iw-ansi.StringWidth(prompt)-1), t.InputLang) + c
 	}
 	rows = append(rows, row{})
 	back = min(back, max(0, len(rows)-ih)) // as far as the scrollback goes
@@ -316,16 +308,18 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 		case r.line == nil:
 			text = live
 		case r.line.Kind == ide.Command || r.line.Kind == ide.More:
-			text = cmdStyle.Render(text)
+			text = commandLine(text, r.line.Lang)
 			if r.j == 0 {
 				text = lead(prompt, r.line.Kind) + text
 			}
+		case r.line.Kind == ide.Comment:
+			text = dimStyle.Render(text)
 		case r.line.Kind == ide.ErrorOutput:
 			text = errStyle.Render(text)
 		case r.line.Kind == ide.Added:
-			text = paintOn(text, langOf(r.line.Lang), theme.AddedBg)
+			text = diffLine(text, r.j == 0, r.line.Lang, gitAdd)
 		case r.line.Kind == ide.Removed:
-			text = paintOn(text, langOf(r.line.Lang), theme.RemovedBg)
+			text = diffLine(text, r.j == 0, r.line.Lang, gitDel)
 		case r.line.Kind == ide.Hunk:
 			text = hunkStyle.Render(text)
 		case r.line.Kind == ide.Meta && (strings.HasPrefix(r.line.Text, "diff ") || strings.HasPrefix(r.line.Text, "commit ")):
@@ -336,6 +330,10 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 			text = codeLine(st, text, r.line)
 		case r.line.Kind == ide.Match:
 			text = hitLine(st, text, r.j == 0, r.line)
+		case r.line.Kind == ide.Status:
+			text = statusLine(st, text, r.j == 0)
+		case r.line.Kind == ide.Stat:
+			text = statLine(st, text, r.at, r.line.Text)
 		default:
 			text = outputLine(st, text, r.line.Text)
 		}
@@ -344,7 +342,7 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	// Tail-aligned: blank rows on top, newest line at the bottom.
 	out := append(make([]string, ih-len(shown), ih), airy(shown)...)
 	head := title(st, cam, func(int) string { return "terminal" }, fw-3)
-	return frame(w, h, border(cam, ide.Terminal), " "+head+" ", out)
+	return frame(w, h, theme.Border, " "+head+" ", out)
 }
 
 // runShown is how long a command runs before the terminal shows for how long.
@@ -363,6 +361,80 @@ func runTime(t *ide.Term, now time.Time) string {
 		return fmt.Sprintf("%dm%02ds", d/time.Minute, d%time.Minute/time.Second)
 	}
 	return fmt.Sprintf("%dh%02dm", d/time.Hour, d%time.Hour/time.Minute)
+}
+
+// commandLine draws text, typed at a prompt, in the colours of what it is: the shell's, or those of
+// the language a here-document feeds (lang, a file langOf knows); what has no colour of its own
+// white, as typed.
+func commandLine(text, lang string) string {
+	l := shLang
+	if lang != "" {
+		l = langOf(lang)
+	}
+	rs := []rune(text)
+	ks := highlight(rs, l)
+	fg := make([]color.Color, len(rs))
+	for i, k := range ks {
+		if k == plain {
+			fg[i] = theme.Bright
+		}
+	}
+	return paintRunes(rs, ks, fg)
+}
+
+// gitAdd and gitDel are git's colours of what is staged or added, and of what is not or removed.
+var (
+	gitAdd = lipgloss.NewStyle().Foreground(theme.Green)
+	gitDel = lipgloss.NewStyle().Foreground(theme.Red)
+)
+
+// diffLine draws text, a row of a diff's changed line, on the terminal's own background: on its
+// first row the sign in git's colour of the change (sign), then the code in the colours of lang.
+func diffLine(text string, first bool, lang string, sign lipgloss.Style) string {
+	if !first || text == "" {
+		return paint(text, langOf(lang))
+	}
+	_, n := utf8.DecodeRuneInString(text)
+	return sign.Render(text[:n]) + paint(text[n:], langOf(lang))
+}
+
+// statusLine draws text, a row of a line of git status --short: on its first row the status as git
+// colours it, the staged column green and the unstaged one red (untracked, ignored and unmerged
+// red both); then the path as plain output.
+func statusLine(st *ide.State, text string, first bool) string {
+	rs := []rune(text)
+	if !first || len(rs) < 2 {
+		return outputLine(st, text, "")
+	}
+	x, y := gitAdd, gitDel
+	if xy := string(rs[:2]); strings.ContainsAny(xy, "?!U") || xy == "AA" || xy == "DD" {
+		x = gitDel
+	}
+	return x.Render(string(rs[0])) + y.Render(string(rs[1])) + outputLine(st, string(rs[2:]), "")
+}
+
+// statLine draws text, the row of the diffstat line that starts at its drawn rune at, as git
+// colours it: the bar's "+" green, its "-" red; the rest as plain output.
+func statLine(st *ide.State, text string, at int, line string) string {
+	rs := []rune(text)
+	bar := min(max(utf8.RuneCountInString(drawn(strings.TrimRight(line, "+-")))-at, 0), len(rs))
+	out := outputLine(st, string(rs[:bar]), "")
+	for i := bar; i < len(rs); {
+		j := i + 1
+		for j < len(rs) && rs[j] == rs[i] {
+			j++
+		}
+		switch s := string(rs[i:j]); rs[i] {
+		case '+':
+			out += gitAdd.Render(s)
+		case '-':
+			out += gitDel.Render(s)
+		default: // the "…" of a row cut short
+			out += outputLine(st, s, "")
+		}
+		i = j
+	}
+	return out
 }
 
 // lead is what goes before a command's line of kind k: the prompt on its first, as much room on
@@ -446,9 +518,19 @@ type cell struct {
 	r0, r1 int    // rune range [r0, r1) in the source text
 }
 
+// Undrawn reports whether drawn text goes without r: the runes that widen the character before them
+// in some terminals and not in others (emoji presentation selectors, the zero-width joiner, skin
+// tones), so that the layout, the renderer and the terminal count the same cells; and the regional
+// indicators and tags that make flags.
+func Undrawn(r rune) bool {
+	return r == 0xfe0e || r == 0xfe0f || r == 0x200d || 0x1f3fb <= r && r <= 0x1f3ff ||
+		0x1f1e6 <= r && r <= 0x1f1ff || 0xe0000 <= r && r <= 0xe007f
+}
+
 // layout splits s into cells: tabs become 4 spaces; escape sequences and other control characters
-// vanish; invalid UTF-8 shows as U+FFFD. It stops once the cells are wider than maxW and cover more
-// than minRunes runes, so huge lines stay cheap, and returns how many bytes of s it consumed.
+// vanish, so do Undrawn runes; invalid UTF-8 shows as U+FFFD. It stops once the cells are wider
+// than maxW and cover more than minRunes runes, so huge lines stay cheap, and returns how many
+// bytes of s it consumed.
 func layout(s string, maxW, minRunes int) ([]cell, int) {
 	var cs []cell
 	var state byte
@@ -462,8 +544,8 @@ func layout(s string, maxW, minRunes int) ([]cell, int) {
 			c.s, c.w = "    ", 4
 		case unicode.IsControl(first):
 			c.s, c.w = "", 0
-		case !utf8.ValidString(g):
-			c.s = strings.ToValidUTF8(g, "�")
+		case !utf8.ValidString(g) || strings.ContainsFunc(g, Undrawn):
+			c.s = strings.Join(strings.FieldsFunc(strings.ToValidUTF8(g, "�"), Undrawn), "")
 			c.w = ansi.StringWidth(c.s)
 		}
 		cs = append(cs, c)
@@ -471,6 +553,9 @@ func layout(s string, maxW, minRunes int) ([]cell, int) {
 	}
 	return cs, n
 }
+
+// drawn is the text of s as its cells draw it.
+func drawn(s string) string { return clip(s, math.MaxInt, "") }
 
 // clip renders s as plain one-line text at most w cells wide; text that does not fit ends with more.
 func clip(s string, w int, more string) string {

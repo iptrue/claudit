@@ -27,7 +27,7 @@ func editorPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 		body = editorBody(st, cam, tab, o, iw, ih)
 		head = " " + title(st, cam, func(room int) string { return shortPath(tab.Path, st.Root, room) }, iw-3) + " "
 	}
-	return frame(w, h, border(cam, ide.Editor), head, body)
+	return frame(w, h, theme.Border, head, body)
 }
 
 // shownTab is the file the editor shows for agent a: its own, else the last opened; nil for none.
@@ -83,6 +83,7 @@ type style struct {
 	fg     color.Color // replaces the syntax colour (carets)
 	bg     color.Color // selection or current line; nil for none
 	cursor bool        // a caret: the spin frame, in fg
+	block  bool        // a caret: the cell's own text in fg on bg
 }
 
 func (k style) render(s string) string {
@@ -102,6 +103,7 @@ type mark struct {
 	from, to ide.Pos // its selection; empty when from == to
 	color    color.Color
 	spin     bool // its agent works: the caret shows
+	block    bool // its agent types: the caret is a block
 }
 
 // lineCaret is a caret on the line being drawn.
@@ -110,6 +112,7 @@ type lineCaret struct {
 	color  color.Color
 	own    bool // the camera's caret
 	spin   bool // its agent works: the spin frame shows
+	block  bool // its agent types: a solid block shows, over the spin frame
 	placed bool
 }
 
@@ -131,7 +134,7 @@ func editorBody(st *ide.State, cam *ide.Agent, tab *ide.Tab, o Options, iw, ih i
 		if a != nil && a.Kind != ide.Main && (a.Status == ide.Done || a.Status == ide.Failed) && a.Activity == "" {
 			continue // it has finished and played everything: no longer at work here
 		}
-		m := mark{pos: c.Pos, color: agentColor(a), spin: a != nil && working(a, o)}
+		m := mark{pos: c.Pos, color: agentColor(a), spin: a != nil && working(a, o), block: a != nil && typing(a, o)}
 		if c.Sel != nil {
 			m.from, m.to = order(c.Sel.From, c.Sel.To)
 		}
@@ -168,8 +171,9 @@ func editorBody(st *ide.State, cam *ide.Agent, tab *ide.Tab, o Options, iw, ih i
 		shift = x - tw + 1 + tw/4
 	}
 
-	// A caret is a spin frame while its agent works, else none.
-	spin, frame := focused && working(cam, o), spinFrame(o.Now)
+	// A caret is a solid block while its agent types, selects or deletes text, a spin frame while
+	// it works otherwise, else none.
+	spin, block, frame := focused && working(cam, o), focused && typing(cam, o), spinFrame(o.Now)
 	// The newest glow of each line.
 	glows := map[int]ide.Glow{}
 	for _, g := range tab.Buf.Glow {
@@ -179,16 +183,19 @@ func editorBody(st *ide.State, cam *ide.Agent, tab *ide.Tab, o Options, iw, ih i
 	}
 
 	lang := langOf(tab.Path)
+	if tab.Hex {
+		lang = nil
+	}
 	// rows draws line ln: one row, or one per piece of it when wrapping.
 	rows := func(ln int) []string {
 		hl := focused && ln == cur.Line
 		var lcs []lineCaret
-		if hl && spin {
-			lcs = append(lcs, lineCaret{col: cur.Col, color: agentColor(cam), own: true, spin: true})
+		if hl && (spin || block) {
+			lcs = append(lcs, lineCaret{col: cur.Col, color: agentColor(cam), own: true, spin: spin, block: block})
 		}
 		for _, m := range others {
 			if m.pos.Line == ln {
-				lcs = append(lcs, lineCaret{col: m.pos.Col, color: m.color, spin: m.spin})
+				lcs = append(lcs, lineCaret{col: m.pos.Col, color: m.color, spin: m.spin, block: m.block})
 			}
 		}
 		num := dimStyle
@@ -297,8 +304,8 @@ func wrapTop(lines []string, cur ide.Pos, tw, ih int) (top, skip int) {
 }
 
 // drawLine draws the cells of line ln that fall in [shift, shift+tw) as exactly tw cells, its text
-// on lineBg (nil for none), with the carets on it. The spin frame replaces the character under a
-// caret whose agent works.
+// on lineBg (nil for none), with the carets on it. Under a caret whose agent types, the cell is a
+// block of its colour; else the spin frame replaces the character under a caret whose agent works.
 func drawLine(line string, ln int, lang *language, lcs []lineCaret, lineBg color.Color, selBg func(ide.Pos) color.Color, shift, tw int, frame string) string {
 	minRunes := -1
 	if len(lcs) > 0 && lcs[0].own {
@@ -317,14 +324,19 @@ func drawLine(line string, ln int, lang *language, lcs []lineCaret, lineBg color
 		cur = k
 		run.WriteString(s)
 	}
-	// place puts every caret not placed yet whose column is before end on k; the first that spins shows.
+	// place puts every caret not placed yet whose column is before end on k; the first that types
+	// or spins shows.
 	place := func(k style, end int) style {
 		for i := range lcs {
 			if lcs[i].placed || lcs[i].col >= end {
 				continue
 			}
 			lcs[i].placed = true
-			if lcs[i].spin && !k.cursor {
+			switch {
+			case k.cursor || k.block:
+			case lcs[i].block:
+				k.block, k.fg, k.bg = true, theme.Bg, lcs[i].color
+			case lcs[i].spin:
 				k.cursor, k.fg = true, lcs[i].color
 			}
 		}
@@ -353,7 +365,7 @@ func drawLine(line string, ln int, lang *language, lcs []lineCaret, lineBg color
 		// Past the last character: carets at the end of the line, or a selected line break.
 		sel := selBg(ide.Pos{Line: ln, Col: eol})
 		k := place(style{bg: sel}, math.MaxInt) // lineBg ends with the text
-		if (sel != nil || k.cursor) && x >= shift && x < shift+tw {
+		if (sel != nil || k.cursor || k.block) && x >= shift && x < shift+tw {
 			if k.cursor && x+1 < shift+tw { // a space between the text and the caret, if both fit
 				put(style{bg: k.bg}, " ")
 				x++

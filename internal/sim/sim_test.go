@@ -179,6 +179,38 @@ func TestEditGlowHolds(t *testing.T) {
 	}
 }
 
+// Every step that selects, deletes or types text notes the time on its agent; reading, walking the
+// explorer and the like do not.
+func TestTypedAt(t *testing.T) {
+	s, root := setup(t, map[string]string{"pkg/calc.py": calcPre})
+	path := filepath.Join(root, "pkg/calc.py")
+	m := mainAgent(s)
+	s.ToolUse("main", "r1", "Read", map[string]any{"file_path": path})
+	s.ToolResult("r1", calcPre, false)
+	end := play(s, t0, 10*time.Second, nil)
+	if !m.TypedAt.IsZero() {
+		t.Fatalf("reading typed at %v", m.TypedAt)
+	}
+	s.ToolUse("main", "e1", "Edit", editInput(path, "return a - b", "return a - b  # sub", false))
+	s.ToolResult("e1", "The file has been updated successfully.", false)
+	text, edits := tab(t, s, path).Buf.Text(), 0
+	watch(s, end, 10*time.Second, func() {
+		tb := s.State().FindTab(path)
+		if tb == nil {
+			return
+		}
+		if now := tb.Buf.Text(); now != text || sel(tb, "main") != nil {
+			text, edits = now, edits+1
+			if !m.TypedAt.Equal(m.Active) {
+				t.Fatalf("a step changed the text or the selection at %v, typed at %v", m.Active, m.TypedAt)
+			}
+		}
+	})
+	if edits < 3 || m.TypedAt.IsZero() {
+		t.Fatalf("%d edit steps seen, typed at %v", edits, m.TypedAt)
+	}
+}
+
 // In a live session the snapshot precedes the edit. When old sits inside new and new is in the
 // text already, the edit must still be animated as pending, not taken for one already applied.
 func TestEditOldInsideNewLive(t *testing.T) {
@@ -363,6 +395,29 @@ func TestWriteDeniedNewFile(t *testing.T) {
 	}
 	if _, ok := st.Touched[path]; ok {
 		t.Fatal("a file that never made it to disk is not touched")
+	}
+}
+
+// What a Bash call says it does goes on a "# " line right above its prompt; a search has none.
+func TestBashComment(t *testing.T) {
+	s, _ := setup(t, nil)
+	s.ToolUse("main", "b1", "Bash", map[string]any{"command": "go test ./...", "description": "Run the tests"})
+	s.ToolResult("b1", "ok", false)
+	s.ToolUse("main", "g1", "Grep", map[string]any{"pattern": "TODO"})
+	s.ToolResult("g1", "", false)
+	play(s, t0, 10*time.Second, nil)
+	var got, calls []string
+	for _, l := range mainAgent(s).Term.Lines {
+		if l.Kind == ide.Comment || l.Kind == ide.Command {
+			got, calls = append(got, l.Text), append(calls, l.Call)
+		}
+	}
+	if want := []string{"# Run the tests", "go test ./...", "rg -n 'TODO'"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("comment and command lines %q, want %q", got, want)
+	}
+	// Each says which call typed it: a click on the call in the chat finds it.
+	if want := []string{"b1", "b1", "g1"}; !reflect.DeepEqual(calls, want) {
+		t.Errorf("their calls %q, want %q", calls, want)
 	}
 }
 
@@ -845,15 +900,19 @@ func TestSetRoot(t *testing.T) {
 }
 
 // View puts a file the user clicked in the right column as it is on disk, until an agent's next
-// call plays or the camera is pinned; a binary file is not shown.
+// call plays or the camera is pinned; a binary file as a hex dump, a missing one not at all.
 func TestView(t *testing.T) {
 	s, root := setup(t, map[string]string{"a.go": "package a\n", "b.bin": "x\x00y"})
-	st, path := s.State(), filepath.Join(root, "a.go")
-	if !s.View(path) || st.Viewed != path || st.FindTab(path).Buf.Text() != "package a\n" {
+	st, path, bin := s.State(), filepath.Join(root, "a.go"), filepath.Join(root, "b.bin")
+	if !s.View(path) || st.Viewed != path || st.FindTab(path).Buf.Text() != "package a\n" || st.FindTab(path).Hex {
 		t.Fatalf("viewed %q tab %v", st.Viewed, st.FindTab(path))
 	}
-	if s.View(filepath.Join(root, "b.bin")) || st.Viewed != path {
-		t.Fatalf("a binary file shown: viewed %q", st.Viewed)
+	want := "00000000  78 00 79" + strings.Repeat("   ", 13) + "   |x.y|"
+	if !s.View(bin) || st.Viewed != bin || st.FindTab(bin).Buf.Text() != want || !st.FindTab(bin).Hex {
+		t.Fatalf("binary viewed %q tab %+v, want %q", st.Viewed, st.FindTab(bin), want)
+	}
+	if s.View(filepath.Join(root, "gone.bin")) || st.Viewed != bin {
+		t.Fatalf("a missing file shown: viewed %q", st.Viewed)
 	}
 	s.Pin("")
 	if st.Viewed != "" {
@@ -863,6 +922,31 @@ func TestView(t *testing.T) {
 	s.ToolUse("main", "c1", "Bash", map[string]any{"command": "ls"})
 	if s.Tick(t0); st.Viewed != "" {
 		t.Fatal("the agent's next call left the file on screen")
+	}
+}
+
+// Of a binary file however big, the hex dump shows the head and says how much more there is.
+func TestViewHugeBinary(t *testing.T) {
+	s, root := setup(t, nil)
+	path := filepath.Join(root, "huge.bin")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("\x7fELF\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(5 << 30); err != nil { // 5 GiB, sparse: nothing to write
+		t.Fatal(err)
+	}
+	f.Close()
+	if !s.View(path) {
+		t.Fatal("a huge binary file is not shown")
+	}
+	lines := s.State().FindTab(path).Buf.Lines
+	if len(lines) != hexBytes/16+1 || !strings.HasPrefix(lines[0], "00000000  7f 45 4c 46 00 00 00 00  00") ||
+		!strings.HasSuffix(lines[0], "|.ELF............|") || lines[len(lines)-1] != fmt.Sprintf("… %d more bytes", 5<<30-hexBytes) {
+		t.Fatalf("%d lines, first %q, last %q", len(lines), lines[0], lines[len(lines)-1])
 	}
 }
 

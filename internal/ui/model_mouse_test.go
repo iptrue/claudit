@@ -2,14 +2,17 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pixelbender/claudit/internal/protocol"
@@ -42,6 +45,7 @@ func modelMouseClick(t *testing.T, m *Model, text string) {
 	x, y := modelMouseAt(t, m, text)
 	_, cmd := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
 	modelResumeRun(m, cmd)
+	m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
 }
 
 func modelMouseWheel(m *Model, up bool) {
@@ -196,7 +200,7 @@ func TestModelMouseClickPopup(t *testing.T) {
 }
 
 func TestModelMouseClickPanel(t *testing.T) {
-	m, _ := modelMouseNew(t)
+	m, sent := modelMouseNew(t)
 	modelEvents(m,
 		protocol.ToolUse{ID: "s1", Name: "Agent", Input: map[string]any{"description": "alpha"}},
 		protocol.ToolUse{ID: "s2", Name: "Agent", Input: map[string]any{"description": "beta"}},
@@ -204,6 +208,28 @@ func TestModelMouseClickPanel(t *testing.T) {
 	modelMouseClick(t, m, "stuart")
 	if st := m.Sim.State(); m.PanelSel != "s2" || st.Camera != "s2" || !st.Pinned {
 		t.Errorf("sel %q camera %q pinned %v", m.PanelSel, st.Camera, st.Pinned)
+	}
+	// Pinned, it shows alone; a click on it again, or esc, shows every agent at work again.
+	if st := m.Sim.State(); !strings.Contains(ansi.Strip(m.View().Content), "stuart") {
+		t.Errorf("the pinned agent is not on screen, camera %q", st.Camera)
+	}
+	modelMouseClick(t, m, "stuart")
+	if st := m.Sim.State(); st.Pinned {
+		t.Errorf("a second click left the camera pinned on %q", st.Camera)
+	}
+	modelMouseClick(t, m, "stuart")
+	modelPress(m, inputKey("esc"))
+	if st := m.Sim.State(); st.Pinned || len(*sent) != 0 {
+		t.Errorf("esc: pinned %v, sent %v", st.Pinned, *sent)
+	}
+	// A press that starts a selection picks nothing.
+	x, y := modelMouseAt(t, m, "stuart")
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: x + 3, Y: y, Button: tea.MouseLeft})
+	m.View()
+	m.Update(tea.MouseReleaseMsg{X: x + 3, Y: y, Button: tea.MouseLeft})
+	if st := m.Sim.State(); st.Pinned {
+		t.Error("a drag over an agent pinned it")
 	}
 	modelPress(m, inputKey("tab"))
 	modelMouseClick(t, m, "Ask claude…")
@@ -249,9 +275,49 @@ func TestModelMouseSelect(t *testing.T) {
 	if v := m.View(); m.sel.text != "the bug\ndone" || !strings.Contains(v.Content, fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, b>>8)) {
 		t.Errorf("two rows: %q, lit %v", m.sel.text, strings.Contains(v.Content, "48;2"))
 	}
+	// The release copies it: it flashes, stays lit a moment, then goes out, a frame at a time; the
+	// status says so in place of the hints a while longer, fading too.
+	m.Status.State = "idle"
+	at := modelAt(m, time.Second)
 	_, cmd := m.Update(tea.MouseReleaseMsg{X: x + 3, Y: y + 1, Button: tea.MouseLeft}) // not run: it would copy
-	if cmd == nil || m.sel != (selection{}) {
-		t.Errorf("release: cmd %v selection %+v", cmd != nil, m.sel)
+	if cmd == nil || m.tickInterval() != tickAmbient {
+		t.Errorf("release: cmd %v, tick %v", cmd != nil, m.tickInterval())
+	}
+	bg := func(c interface{ RGBA() (r, g, b, a uint32) }) string {
+		r, g, b, _ := c.RGBA()
+		return fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, b>>8)
+	}
+	tr, tg, tb, _ := copiedColor.RGBA()
+	note := fmt.Sprintf("38;2;%d;%d;%dmcopied to clipboard", tr>>8, tg>>8, tb>>8)
+	for _, c := range []struct {
+		after                   time.Duration
+		flash, lit, half, noted bool
+	}{
+		{selFlash / 2, true, false, false, true}, {selHold / 2, false, true, false, true},
+		{selHold + selFade/2, false, false, true, true}, {selHold + selFade, false, false, false, true},
+		{noteHold + noteFade, false, false, false, false},
+	} {
+		m.Update(tickMsg(at.Add(c.after)))
+		v := m.View().Content
+		got := []bool{strings.Contains(v, bg(selFlashBg)), strings.Contains(v, bg(theme.SelBg)), strings.Contains(v, bg(theme.Mix(theme.SelBg, theme.Bg, 0.5))), strings.Contains(v, note)}
+		if want := []bool{c.flash, c.lit, c.half, c.noted}; !slices.Equal(got, want) {
+			t.Errorf("%v after the release: flash, lit, half out, noted %v, want %v", c.after, got, want)
+		}
+		if gone := !strings.Contains(ansi.Strip(v), "copied to clipboard"); gone != (c.after >= noteHold+noteFade) {
+			t.Errorf("%v after the release: the note gone %v", c.after, gone)
+		}
+	}
+	if m.tickInterval() != tickIdle {
+		t.Errorf("out, the tick stays %v", m.tickInterval())
+	}
+	// Another button let go copies nothing more: what the box covers now is not what was dragged.
+	if _, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseRight}); cmd != nil {
+		t.Error("a right release copies again")
+	}
+	// A drag over blank rows lights nothing and copies nothing.
+	m.sel = selection{drag: true, text: "\n"}
+	if cmd := m.copySelection(); cmd != nil || m.sel != (selection{}) {
+		t.Errorf("blank rows: cmd %v, selection %+v", cmd != nil, m.sel)
 	}
 
 	// A click without a drag copies nothing.
@@ -259,6 +325,29 @@ func TestModelMouseSelect(t *testing.T) {
 	m.View()
 	if _, cmd := m.Update(tea.MouseReleaseMsg{X: x + 4, Y: y, Button: tea.MouseLeft}); cmd != nil {
 		t.Error("a click copied")
+	}
+}
+
+// A selection lights each of its rows only as far as the row's text goes, a wide character whole;
+// a blank row stays dark.
+func TestDrawSelectionEndsWithText(t *testing.T) {
+	c := lipgloss.NewCanvas(10, 3).Compose(lipgloss.NewCompositor(lipgloss.NewLayer("ab\n\nd世")))
+	s := selection{box: image.Rect(0, 0, 10, 3), from: image.Pt(1, 0), to: image.Pt(9, 2), drag: true}
+	if got := drawSelection(c, s, theme.SelBg, 0); got != "b\n\nd世" {
+		t.Errorf("text %q", got)
+	}
+	for y, want := range []string{".#........", "..........", "###......."} {
+		var got strings.Builder
+		for x := range 10 {
+			if cell := c.CellAt(x, y); cell != nil && cell.Style.Bg != nil {
+				got.WriteByte('#')
+			} else {
+				got.WriteByte('.')
+			}
+		}
+		if got.String() != want {
+			t.Errorf("row %d lit %s, want %s", y, got.String(), want)
+		}
 	}
 }
 
@@ -369,7 +458,7 @@ func TestViewChatGrows(t *testing.T) {
 	}
 }
 
-// Behind a popup the screen fades; the popup does not.
+// Behind a popup or the help the screen fades; they do not.
 func TestViewDimsUnderPopup(t *testing.T) {
 	sgr := func(c interface{ RGBA() (r, g, b, a uint32) }) string {
 		r, g, b, _ := c.RGBA()
@@ -391,5 +480,55 @@ func TestViewDimsUnderPopup(t *testing.T) {
 	line := strings.Split(m.View().Content, "\n")[y]
 	if !strings.Contains(line, sgr(theme.Accent)) || x == 0 {
 		t.Errorf("the popup faded: %q", line)
+	}
+	m.Popup, m.ShowHelp = nil, true
+	if s := status(); strings.Contains(s, sgr(theme.Fg)) || !strings.Contains(s, sgr(theme.Mix(theme.Fg, theme.Bg, drawDimBy))) {
+		t.Errorf("status under the help: %q", s)
+	}
+	_, y = modelMouseAt(t, m, "send the prompt")
+	if line := strings.Split(m.View().Content, "\n")[y]; !strings.Contains(line, sgr(theme.Accent)) {
+		t.Errorf("the help faded: %q", line)
+	}
+}
+
+// A click on a Bash line of the chat shows main alone, its terminal scrolled to where the call
+// ran; a drag over the line, or a call the terminal holds no line of yet, shows nothing.
+func TestModelMouseClickBash(t *testing.T) {
+	m, _ := modelMouseNew(t)
+	var out []string
+	for i := range 60 {
+		out = append(out, fmt.Sprintf("line %02d", i))
+	}
+	modelEvents(m,
+		protocol.ToolUse{ID: "b1", Name: "Bash", Input: map[string]any{"command": "go test ./...", "description": "Run the tests"}},
+		protocol.ToolResult{ID: "b1", Output: strings.Join(out, "\n")})
+	for d := time.Duration(0); d < 20*time.Second; d += 50 * time.Millisecond {
+		m.Update(tickMsg(modelT0.Add(d)))
+	}
+	modelEvents(m, protocol.ToolUse{ID: "b2", Name: "Bash", Input: map[string]any{"command": "ls", "description": "List the files"}})
+	if n := strings.Count(ansi.Strip(m.View().Content), "Run the tests"); n != 1 {
+		t.Fatalf("%q on screen %d times, want the chat's alone:\n%s", "Run the tests", n, ansi.Strip(m.View().Content))
+	}
+
+	x, y := modelMouseAt(t, m, "Run the tests")
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: x + 3, Y: y, Button: tea.MouseLeft})
+	m.View()
+	m.Update(tea.MouseReleaseMsg{X: x + 3, Y: y, Button: tea.MouseLeft})
+	if st := m.Sim.State(); st.Pinned {
+		t.Error("a drag over a Bash line pinned the camera")
+	}
+	modelMouseClick(t, m, "List the files")
+	if st := m.Sim.State(); st.Pinned {
+		t.Error("a call not typed yet pinned the camera")
+	}
+
+	modelMouseClick(t, m, "Run the tests")
+	if st := m.Sim.State(); !st.Pinned || st.Camera != "main" || m.scroll["term:main"] <= 0 {
+		t.Errorf("pinned %v on %q, terminal scrolled back %d", st.Pinned, st.Camera, m.scroll["term:main"])
+	}
+	screen := ansi.Strip(m.View().Content)
+	if !strings.Contains(screen, "# Run the tests") || !strings.Contains(screen, "go test ./...") {
+		t.Errorf("the terminal does not show the call:\n%s", screen)
 	}
 }

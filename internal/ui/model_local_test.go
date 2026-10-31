@@ -129,7 +129,7 @@ func TestModelSlashPickers(t *testing.T) {
 
 // /model with a model switches claude to it at once, even mid-turn, and out of the chat: claude -p
 // would take the command as text and name the new model only with the turn after. Its answer
-// names the model in the chat, above a reply still streaming; a refusal leaves the old one.
+// names the model in the status, not the chat, a reply streaming on; a refusal leaves the old one.
 func TestModelSetModel(t *testing.T) {
 	m, sent := modelLocalNew(t)
 	m.Status.Busy = true
@@ -141,7 +141,7 @@ func TestModelSetModel(t *testing.T) {
 	if m.Status.Model != "claude-sonnet-5-5" {
 		t.Errorf("model %q", m.Status.Model)
 	}
-	want := []ChatEntry{{Kind: CommandEntry, Text: "Set model to claude-sonnet-5-5", At: modelT0}, {Kind: AssistantEntry, Text: "Half", At: modelT0}}
+	want := []ChatEntry{{Kind: AssistantEntry, Text: "Half", At: modelT0}}
 	if !reflect.DeepEqual(m.Chat, want) {
 		t.Errorf("chat %+v", m.Chat)
 	}

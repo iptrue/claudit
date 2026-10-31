@@ -31,22 +31,25 @@ func browserPane(st *ide.State, a *ide.Agent, o Options, w, h int) []string {
 	}
 	body := airy(append([]string{addressBar(a, o, iw), ruleStyle.Render(strings.Repeat("─", max(iw, 0)))}, rows...))
 	head := title(st, a, func(int) string { return "web" }, fw-3)
-	return frame(w, h, border(a, ide.Browser), " "+head+" ", body)
+	return frame(w, h, theme.Border, " "+head+" ", body)
 }
 
 // pageHeight is how many rows of the page a browser ih rows high shows under its two bars.
 func pageHeight(ih int) int { return max(0, ih-2) }
 
 // addressBar is the first row of a's browser: the address, its scheme grey, on the pane's own
-// background. The caret spins while a types it, and a space after it while the page loads.
+// background. The caret is a solid block while a types the address, a spin frame while a works
+// otherwise, and a spin frame a space after it while the page loads.
 func addressBar(a *ide.Agent, o Options, iw int) string {
 	p := &a.Page
 	var caret string
 	switch {
 	case !p.LoadAt.IsZero():
-		caret = " " + spinFrame(o.Now)
+		caret = okStyle.Render(" " + spinFrame(o.Now))
+	case len(p.Lines) == 0 && typing(a, o):
+		caret = lipgloss.NewStyle().Background(theme.OK).Render(" ")
 	case len(p.Lines) == 0 && working(a, o):
-		caret = spinFrame(o.Now)
+		caret = okStyle.Render(spinFrame(o.Now))
 	}
 	room := iw - ansi.StringWidth(caret)
 	text := tail(p.URL, max(room, 0))
@@ -59,7 +62,7 @@ func addressBar(a *ide.Agent, o Options, iw int) string {
 	default:
 		field = fgStyle.Render(text)
 	}
-	field += okStyle.Render(caret)
+	field += caret
 	return field + strings.Repeat(" ", max(0, iw-ansi.StringWidth(field)))
 }
 

@@ -8,9 +8,11 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/pixelbender/claudit/internal/ide"
 	"github.com/pixelbender/claudit/internal/protocol"
+	"github.com/pixelbender/claudit/internal/theme"
 )
 
 func modelNames(cs []protocol.Command) []string {
@@ -280,7 +282,8 @@ func TestModelSlashDescriptions(t *testing.T) {
 	}
 }
 
-// Fast ticks only while something moves on screen: a wipe while it plays, not an empty editor.
+// Fast ticks only while something moves on screen: the spinner while claude starts, not an empty
+// editor nor a cut to another agent.
 func TestModelAnimating(t *testing.T) {
 	m, _ := modelNew(t, false)
 	m.Update(tickMsg(modelT0))
@@ -292,13 +295,9 @@ func TestModelAnimating(t *testing.T) {
 		t.Error("ticking for an empty editor")
 	}
 	m.Sim.Agent("s1", ide.Subagent).Focus = ide.Terminal
-	m.Sim.Pin("s1") // a cut at the last tick
-	if !m.animating() {
-		t.Error("the wipe after a pin does not get frames")
-	}
-	m.Update(tickMsg(modelT0.Add(time.Second)))
+	m.Sim.Pin("s1")
 	if m.animating() {
-		t.Error("ticking after the wipe ended")
+		t.Error("ticking after a cut")
 	}
 }
 
@@ -511,13 +510,14 @@ func TestModelCommandsOutOfChat(t *testing.T) {
 	}
 }
 
-// While claude works its caret spins white where its next words go, under the text of the prompt
-// it got, then under what it says. Prompts queued meanwhile wait below: claude has not seen them.
+// While claude works its caret spins in main's colour where its next words go, under the text of
+// the prompt it got, then under what it says. Prompts queued meanwhile wait below: claude has not
+// seen them.
 func TestModelCaret(t *testing.T) {
 	m, _ := modelNew(t, false)
 	chat := func() []string {
 		c, entries := new(chatCache), m.chatEntries()
-		out, _ := renderChat(c, entries, 25, drawChatCount(c, entries, 25), 0)
+		out, _, _ := renderChat(c, entries, 25, drawChatCount(c, entries, 25), 0)
 		return drawPlainLines(out)
 	}
 	modelPress(m, inputTyped("Fix it")...)
@@ -526,8 +526,8 @@ func TestModelCaret(t *testing.T) {
 	if got, want := chat(), []string{"  › Fix it", "    " + spin}; !slices.Equal(got, want) {
 		t.Fatalf("chat %q, want %q", got, want)
 	}
-	if e := m.chatEntries()[1]; !slices.Equal(drawEntry(e, 60), []string{"  " + styleReply.Render(spin)}) {
-		t.Errorf("caret %q is not white", drawEntry(e, 60))
+	if e := m.chatEntries()[1]; !slices.Equal(drawEntry(e, 60), []string{"  " + lipgloss.NewStyle().Foreground(theme.Agents[0]).Render(spin)}) {
+		t.Errorf("caret %q is not in main's colour", drawEntry(e, 60))
 	}
 	modelPress(m, inputTyped("And docs")...)
 	modelPress(m, inputKey("enter"))

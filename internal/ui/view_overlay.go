@@ -107,14 +107,15 @@ var drawHelpRows = [][2]string{
 	{"ctrl+v", "paste the picture on the clipboard; drop picture files to attach them"},
 	{"↑ ↓", "previous prompts; queued prompts first, edited in their place"},
 	{"/", "slash commands: ↑/↓ pick, tab complete, enter run; a typo is held back, enter again sends it"},
-	{"esc", "interrupt claude, else clear the prompt, else quit (twice)"},
+	{"esc", "show every agent again, else interrupt claude, else clear the prompt, else quit (twice)"},
 	{"shift+tab", "permission mode: manual → accept edits → plan → auto; over a request, also answers what the new mode allows"},
 	{"pgup pgdn", "scroll the conversation (or the wheel)"},
 	{"drag", "select text in the conversation or a pane; letting go copies it"},
+	{"click", "what a Bash call does, in the conversation: where it ran, in the terminal"},
 	{"", "Questions and permissions"},
 	{"y  n", "allow, deny (esc denies too); ↑/↓ pgup/pgdn scroll; or click"},
 	{"", "Camera"},
-	{"alt+1-9", "pin the camera on an agent (or click it)"},
+	{"alt+1-9", "show an agent alone (or click it; click again or esc for all)"},
 	{"alt+0", "auto camera: follow the action"},
 	{"tab", "agents panel while agents work: ↑/↓ select, enter pin"},
 	{"alt+z", "word wrap in the editor on/off"},
@@ -122,9 +123,6 @@ var drawHelpRows = [][2]string{
 	{"F1  /help", "this reference"},
 	{"ctrl+c", "clear the prompt, interrupt, or quit (twice)"},
 }
-
-// drawLegend explains the glyphs of the IDE.
-const drawLegend = "◇ subagent  ▣ workflow  ◉ camera"
 
 // renderHelp draws the key reference box, at most maxWidth×maxHeight.
 func renderHelp(maxWidth, maxHeight int) string {
@@ -143,14 +141,14 @@ func renderHelp(maxWidth, maxHeight int) string {
 		key := styleAccent.Render(drawFit(r[0], keyW))
 		lines = append(lines, drawFlow([]drawSpan{{r[1], styleFg}}, inner, "  "+key, strings.Repeat(" ", 2+keyW))...)
 	}
-	lines = append(lines, "", styleDim.Render(drawTrunc(drawLegend, inner)), "", styleDim.Render("esc close"))
+	lines = append(lines, "", styleDim.Render("esc close"))
 	if len(lines) > maxHeight-2 { // a short screen: no blank lines
 		lines = slices.DeleteFunc(lines, func(l string) bool { return l == "" })
 	}
 	if n := max(1, maxHeight-2); len(lines) > n { // cut short, it still says how to close it
 		lines = append(lines[:n-1], lines[len(lines)-1])
 	}
-	return strings.Join(drawBox(lines, inner, theme.BorderFocus), "\n")
+	return strings.Join(drawBox(lines, inner, theme.Border), "\n")
 }
 
 // drawGradient paints text with colours running through stops, left to right.

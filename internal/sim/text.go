@@ -2,6 +2,7 @@ package sim
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -114,6 +115,51 @@ func snapshot(path string) (string, bool) {
 		return "", false
 	}
 	return headLines(fileText(string(data)), maxLines), true
+}
+
+// hexBytes is how much of a binary file the editor shows: 4096 rows of a hex dump.
+const hexBytes = 64 << 10
+
+// hexDump is the head of the file at path as hexdump -C prints it: the offset, 16 bytes in hex,
+// then the same as ASCII with a dot for a byte that is not printable; after it, how much more
+// there is. However big the file, it reads hexBytes of it at most.
+func hexDump(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, hexBytes))
+	if err != nil {
+		return "", false
+	}
+	var b strings.Builder
+	for off := 0; off < len(data); off += 16 {
+		row := data[off:min(off+16, len(data))]
+		fmt.Fprintf(&b, "%08x ", off)
+		for i := range 16 {
+			if i == 8 {
+				b.WriteByte(' ')
+			}
+			if i < len(row) {
+				fmt.Fprintf(&b, " %02x", row[i])
+			} else {
+				b.WriteString("   ") // the last row keeps the ASCII column in line
+			}
+		}
+		b.WriteString("  |")
+		for _, c := range row {
+			if c < 0x20 || c > 0x7e {
+				c = '.'
+			}
+			b.WriteByte(c)
+		}
+		b.WriteString("|\n")
+	}
+	if fi, err := f.Stat(); err == nil && fi.Size() > int64(len(data)) {
+		fmt.Fprintf(&b, "… %d more bytes\n", fi.Size()-int64(len(data)))
+	}
+	return strings.TrimSuffix(b.String(), "\n"), true
 }
 
 // numbered turns Read output ("<n>\t<text>" per line) back into file text. Lines without a

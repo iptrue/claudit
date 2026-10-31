@@ -232,13 +232,19 @@ func TestViewModes(t *testing.T) {
 	}
 }
 
-// Hints follow the keys: the prompt or the agents panel.
+// Hints follow the keys: the prompt or the agents panel; tab only while the panel is there to go to.
 func TestViewHints(t *testing.T) {
+	m, _ := modelNew(t, false)
+	m.Width, m.Height = 160, 30
+	modelEvents(m, protocol.ToolUse{ID: "s1", Name: "Agent", Input: map[string]any{"description": "alpha"}})
+	if status := drawPlainLines(m.View().Content)[29]; !strings.HasSuffix(status, "shift+tab mode · tab agents · F1 help · esc interrupt") {
+		t.Errorf("a subagent at work: status %q", status)
+	}
 	tests := []struct {
 		mode int
 		want string
 	}{
-		{0, "shift+tab mode · tab agents · / commands · F1 help · esc x2 quit"},
+		{0, "shift+tab mode · / commands · F1 help · esc x2 quit"},
 		{1, "↑/↓ select · enter pin · alt+0 auto · tab back"},
 	}
 	for _, tt := range tests {

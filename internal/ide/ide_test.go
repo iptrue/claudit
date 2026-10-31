@@ -3,6 +3,7 @@ package ide
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -133,6 +134,39 @@ func titles(st *State) []string {
 
 // Forget undoes a Write of a file that never made it to disk.
 // Toggle folds a folder with all below it and unfolds it as it is on disk; a file stays as it is.
+// The rows git ignores are flagged: listed, unfolded, or revealed before they are on disk.
+func TestExplorerIgnored(t *testing.T) {
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("no git: %v %s", err, out)
+	}
+	mkTree(t, root, "out/a.bin", "src/x.go", "src/x.log", "main.go")
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("/out/\n*.log\n/gen/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var st State
+	st.SetRoot(root)
+	st.Reveal(filepath.Join(root, "src/x.go"))
+	st.Reveal(filepath.Join(root, "out/a.bin"))
+	st.Reveal(filepath.Join(root, "gen/deep/y.go")) // not on disk
+	st.Reveal(filepath.Join(root, "new.log"))       // not on disk
+	want := map[string]bool{"out": true, "out/a.bin": true, "src/x.log": true, "gen": true, "gen/deep": true, "gen/deep/y.go": true, "new.log": true}
+	for _, r := range st.Tree {
+		rel, _ := filepath.Rel(root, r.Path)
+		if r.Ignored != want[rel] {
+			t.Errorf("%s ignored %v, want %v", rel, r.Ignored, want[rel])
+		}
+	}
+
+	var plain State // outside a repository, nothing is ignored
+	plain.SetRoot(t.TempDir())
+	mkTree(t, plain.Root, "x.log")
+	plain.Reveal(filepath.Join(plain.Root, "x.log"))
+	if plain.Tree[0].Ignored {
+		t.Error("a file outside a repository is ignored")
+	}
+}
+
 func TestToggle(t *testing.T) {
 	root := t.TempDir()
 	mkTree(t, root, "src/util/x.go", "src/main.go", "b.txt")

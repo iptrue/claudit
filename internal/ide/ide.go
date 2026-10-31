@@ -21,16 +21,15 @@ type Pos struct{ Line, Col int }
 // State is everything the IDE shows. Several agents share the explorer and the open files; each
 // has its own caret, terminal and current file. The view follows one of them: the camera.
 type State struct {
-	Root     string    // directory the explorer shows
-	Tree     []TreeRow // visible explorer rows, in display order
-	Tabs     []*Tab
-	Agents   []*Agent          // in order of appearance; Agents[0] is the main agent, key "main"
-	Camera   string            // key of the agent the view follows
-	CameraAt time.Time         // when the camera last cut to another agent
-	Pinned   bool              // the user pinned the camera; otherwise it follows the action
-	Viewed   string            // a file the user opened from the explorer: it fills the right column for a while
-	Touched  map[string]string // file path → key of the agent that last worked on it
-	Edited   map[string]bool   // files an agent changed: an Edit or a Write that succeeded
+	Root    string    // directory the explorer shows
+	Tree    []TreeRow // visible explorer rows, in display order
+	Tabs    []*Tab
+	Agents  []*Agent          // in order of appearance; Agents[0] is the main agent, key "main"
+	Camera  string            // key of the agent the view follows
+	Pinned  bool              // the user pinned the camera; otherwise it follows the action
+	Viewed  string            // a file the user opened from the explorer: it fills the right column for a while
+	Touched map[string]string // file path → key of the agent that last worked on it
+	Edited  map[string]bool   // files an agent changed: an Edit or a Write that succeeded
 }
 
 // AgentKind tells what an agent is.
@@ -67,6 +66,7 @@ type Agent struct {
 	Started   time.Time
 	Ended     time.Time // zero while running
 	Active    time.Time // when it last did something on screen
+	TypedAt   time.Time // when it last typed text, or selected or deleted some: its caret is a block a while
 	Hotkey    int       // 1–9 pins the camera on it; 0 for none (workflow nodes, the tenth agent on)
 	Color     int       // palette slot, stable for its lifetime
 
@@ -76,7 +76,6 @@ type Agent struct {
 	File    string // path of the open file it works on; "" for none
 	TreeSel string // path of the explorer row it points at; "" for none
 	Focus   Pane
-	FocusAt time.Time // when Focus last moved between the terminal and the rest
 }
 
 // TreeRow is one visible line of the explorer.
@@ -86,6 +85,7 @@ type TreeRow struct {
 	Path     string // absolute
 	Dir      bool
 	Expanded bool
+	Ignored  bool // git ignores it
 }
 
 // Tab is an open file.
@@ -93,6 +93,7 @@ type Tab struct {
 	Path  string // absolute
 	Title string
 	Buf   Buffer
+	Hex   bool // Buf is a hex dump of a binary file the user viewed: no language to colour
 }
 
 // Buffer is the text of an open file, as shown: lines never contain "\t" (tabs become 4 spaces) or "\r".
@@ -123,19 +124,21 @@ type Selection struct{ From, To Pos }
 
 // Term is a simulated terminal.
 type Term struct {
-	Lines   []TermLine
-	Input   string    // command typed so far on the live prompt line
-	Running bool      // a command is executing: the live prompt line is replaced by a spinner
-	Spinner int       // spinner frame
-	RunAt   time.Time // when the running command started
+	Lines     []TermLine
+	Input     string    // command typed so far on the live prompt line
+	InputLang string    // the language of what Input types, as TermLine.Lang: "" for the shell's
+	Running   bool      // a command is executing: the live prompt line is replaced by a spinner
+	Spinner   int       // spinner frame
+	RunAt     time.Time // when the running command started
 }
 
 // TermLine is one line of terminal scrollback.
 type TermLine struct {
 	Kind   LineKind
 	Text   string // for Command: the command alone, without the prompt
-	Lang   string // for Code, Match, Added and Removed: the file whose language the code is in
+	Lang   string // for Code, Match, Added and Removed: the file whose language the code is in; for More, that of a here-document's body
 	Prefix int    // for Match: the runes of where the hit is ("path:12:") before its code
+	Call   string // for Command, More and Comment: the id of the tool call that typed it
 }
 
 type LineKind int
@@ -152,6 +155,9 @@ const (
 	Removed // a diff's removed line
 	Hunk    // a diff's "@@ -1,2 +1,3 @@"
 	Meta    // a diff's or a log's header: "diff --git …", "index …", "commit …"
+	Status  // a line of git status --short: "XY path"
+	Stat    // a line of a diffstat: " path | 7 ++++++-"
+	Comment // what the command below does, in claude's words: "# …"
 )
 
 // Page is what an agent's browser shows: the address it fetched, or the query it searched for,

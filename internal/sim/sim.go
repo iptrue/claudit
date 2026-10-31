@@ -24,7 +24,6 @@ type Sim struct {
 	seq    int               // scenes created, seeds the jitter
 	added  int               // agents ever added: the next colour (the ui may drop agents)
 	camAt  time.Time         // when the camera moved to its agent
-	now    time.Time         // the last Tick
 	idleAt time.Time         // since when the camera's agent is idle; zero while it is busy
 }
 
@@ -81,15 +80,20 @@ func (s *Sim) SetRoot(root string) {
 }
 
 // View shows the file at path alone in the right column, as on disk now, as the user clicked it
-// in the explorer: until an agent's next tool call plays or the camera is pinned. It reports
-// false for a file it cannot show, binary or unreadable.
+// in the explorer: until an agent's next tool call plays or the camera is pinned. A binary file
+// shows as a hex dump of its head. It reports false for a file it cannot read.
 func (s *Sim) View(path string) bool {
 	text, ok := snapshot(path)
+	hex := false
 	if !ok {
-		return false
+		if text, ok = hexDump(path); !ok {
+			return false
+		}
+		hex = true
 	}
 	if t := s.st.Open(path, text); !t.Buf.Modified { // unless an agent is typing in it
 		patch(&t.Buf, text)
+		t.Hex = hex
 	}
 	s.st.Viewed = path
 	return true
@@ -178,16 +182,16 @@ func (s *Sim) ToolUse(agent, id, name string, input map[string]any) {
 	var what string
 	switch name {
 	case "Bash":
-		cmd := str(input, "command")
+		cmd, note := str(input, "command"), str(input, "description")
 		what = "$ " + cmd
-		build = func(sc *scene) { s.command(sc, cmd, 0) }
+		build = func(sc *scene) { s.command(sc, cmd, note, 0) }
 	case "Grep":
 		cmd := "rg -n " + quote(str(input, "pattern"))
 		if p := str(input, "path"); p != "" {
 			cmd += " " + s.rel(p)
 		}
 		what = "rg " + str(input, "pattern")
-		build = func(sc *scene) { s.command(sc, cmd, maxOutput) }
+		build = func(sc *scene) { s.command(sc, cmd, "", maxOutput) }
 	case "Glob":
 		p := "."
 		if v := str(input, "path"); v != "" {
@@ -195,7 +199,7 @@ func (s *Sim) ToolUse(agent, id, name string, input map[string]any) {
 		}
 		cmd := "find " + p + " -name " + quote(str(input, "pattern"))
 		what = "find " + str(input, "pattern")
-		build = func(sc *scene) { s.command(sc, cmd, maxOutput) }
+		build = func(sc *scene) { s.command(sc, cmd, "", maxOutput) }
 	case "WebFetch":
 		url := str(input, "url")
 		what = "fetch " + url
@@ -313,7 +317,6 @@ func (s *Sim) undo(sc *scene) {
 
 // Tick advances every lane and the camera to now and reports whether anything visible changed.
 func (s *Sim) Tick(now time.Time) bool {
-	s.now = now
 	changed := false
 	for _, a := range s.st.Agents {
 		if s.advance(s.lanes[a], now) {

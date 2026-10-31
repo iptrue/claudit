@@ -23,9 +23,6 @@ func (s *Sim) Pin(key string) {
 	if s.FindAgent(key) == nil {
 		return
 	}
-	if s.st.Camera != key {
-		s.st.CameraAt = s.now // Pin has no clock of its own: the last Tick
-	}
 	s.st.Camera, s.st.Pinned, s.idleAt = key, true, time.Time{}
 }
 
@@ -53,7 +50,7 @@ func (s *Sim) direct(now time.Time) bool {
 		if s.st.Camera == a.Key {
 			return false
 		}
-		s.st.Camera, s.st.CameraAt, s.camAt, s.idleAt = a.Key, now, now, time.Time{}
+		s.st.Camera, s.camAt, s.idleAt = a.Key, now, time.Time{}
 		return true
 	}
 	var best *ide.Agent
@@ -70,7 +67,7 @@ func (s *Sim) direct(now time.Time) bool {
 	if best == nil || now.Sub(s.camAt) < dwell && (cur > 0 || now.Sub(s.idleAt) < idleDwell) {
 		return false
 	}
-	s.st.Camera, s.st.CameraAt, s.camAt, s.idleAt = best.Key, now, now, time.Time{}
+	s.st.Camera, s.camAt, s.idleAt = best.Key, now, time.Time{}
 	return true
 }
 

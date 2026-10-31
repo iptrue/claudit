@@ -122,7 +122,8 @@ func (m *Model) slashCommand(text, cmd string) (done bool, run tea.Cmd) {
 var efforts = []string{"low", "medium", "high", "xhigh", "max"}
 
 // setEffort shows the effort /effort level sets: claude -p takes the command but tells the level
-// to nobody. "auto" shows none; a level it will refuse changes nothing.
+// to nobody. "auto" shows none until its turn ends and claude's settings tell the level; a level
+// it will refuse changes nothing.
 func (m *Model) setEffort(level string) {
 	switch level = strings.ToLower(level); {
 	case level == "auto":

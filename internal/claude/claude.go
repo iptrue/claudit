@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pixelbender/claudit/internal/protocol"
@@ -115,6 +116,13 @@ func start(ctx context.Context, args, env []string, events chan<- protocol.Event
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, "claude", append(slices.Clone(flags), args...)...)
 	cmd.Env = env
+	// A session of its own: neither claude nor the commands it runs (sudo, ssh, git asking for a
+	// password) has a terminal to draw over the TUI or to steal keys from.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Stopped, it hears what a closed terminal would tell it: a hangup to its group, so that it
+	// shuts down cleanly and what it runs goes too. What ignores the hangup is killed a second later.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGHUP) }
+	cmd.WaitDelay = time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -135,7 +143,8 @@ func start(ctx context.Context, args, env []string, events chan<- protocol.Event
 		return nil, err
 	}
 	p := &proc{stdin: stdin, stdout: stdout, stderr: stderr, cancel: cancel, done: make(chan struct{})}
-	p.write(protocol.Initialize{RequestID: "init"}) // the slash commands, before any turn
+	p.write(protocol.Initialize{RequestID: "init"})      // the slash commands, before any turn
+	p.write(protocol.GetSettings{RequestID: "settings"}) // the effort: claude -p's Init leaves it out
 
 	stderrDone := make(chan struct{})
 	go func() {

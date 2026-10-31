@@ -822,19 +822,33 @@ func TestModelRetryAndCompaction(t *testing.T) {
 	}
 }
 
-// The effort shows beside the model: as the args or settings name it, as a turn tells it when it
-// does (claude 2.1.314 does not), as /effort sets it; "auto", the model's own, shows none.
+// The effort shows beside the model: as claude's settings tell it, at the start and after a model
+// switch, as a turn tells it when it does (claude 2.1.316 does not), as /effort sets it; "auto",
+// the model's own, shows none.
 func TestModelEffort(t *testing.T) {
 	m, sent := modelNew(t, false)
-	m.StartModel, m.StartEffort = "opus", "xhigh"
 	m.known["effort"] = true
-	modelEvents(m, protocol.Commands{}, protocol.Init{SessionID: "s", Model: "claude-opus-5-5"})
+	modelEvents(m, protocol.Commands{}, protocol.Settings{Effort: "xhigh"}, protocol.Init{SessionID: "s", Model: "claude-opus-5-5"})
 	if m.Status.Effort != "xhigh" {
 		t.Errorf("an init that says nothing of it: effort %q", m.Status.Effort)
 	}
 	modelEvents(m, protocol.Init{SessionID: "s", Model: "claude-opus-5-5", Effort: "high"})
 	if m.Status.Effort != "high" {
 		t.Errorf("an init that tells it: effort %q", m.Status.Effort)
+	}
+	*sent = nil
+	modelEvents(m, protocol.ModelChanged{Model: "claude-haiku-5-5"})
+	if want := []protocol.Outbound{protocol.GetSettings{RequestID: "settings-0"}}; !reflect.DeepEqual(*sent, want) {
+		t.Errorf("a model switch sent %v, want %v", *sent, want)
+	}
+	modelEvents(m, protocol.Settings{Effort: "medium"})
+	if m.Status.Effort != "medium" {
+		t.Errorf("the new model's: effort %q", m.Status.Effort)
+	}
+	chat := len(m.Chat)
+	modelEvents(m, protocol.ControlError{RequestID: "settings", Message: "Unsupported control request subtype: get_settings"})
+	if len(m.Chat) != chat || m.Status.Effort != "medium" {
+		t.Errorf("a claude without get_settings: chat %+v, effort %q", m.Chat[chat:], m.Status.Effort)
 	}
 	for _, tt := range []struct{ typed, want string }{{"/effort low", "low"}, {"/effort auto", ""}, {"/effort MAX", "max"}, {"/effort nonsense", "max"}} {
 		modelEvents(m, protocol.Result{})
@@ -843,6 +857,23 @@ func TestModelEffort(t *testing.T) {
 		if m.Status.Effort != tt.want {
 			t.Errorf("%s: effort %q, want %q (sent %v)", tt.typed, m.Status.Effort, tt.want, *sent)
 		}
+	}
+	// Once the turn of an /effort ends, claude's settings tell the level: "auto" shows as at the start.
+	modelEvents(m, protocol.Result{})
+	modelPress(m, inputTyped("/effort auto")...)
+	modelPress(m, inputKey("enter"))
+	*sent = nil
+	modelEvents(m, protocol.Result{})
+	if want := []protocol.Outbound{protocol.GetSettings{RequestID: "settings-effort"}}; !reflect.DeepEqual(*sent, want) {
+		t.Errorf("the end of /effort's turn sent %v, want %v", *sent, want)
+	}
+	modelEvents(m, protocol.Settings{Effort: "medium"})
+	modelPress(m, inputTyped("hi")...)
+	modelPress(m, inputKey("enter"))
+	*sent = nil
+	modelEvents(m, protocol.Result{})
+	if m.Status.Effort != "medium" || len(*sent) != 0 {
+		t.Errorf("after a prompt's turn: effort %q, sent %v", m.Status.Effort, *sent)
 	}
 }
 
@@ -875,8 +906,8 @@ func TestModelFailureInStatus(t *testing.T) {
 	}
 }
 
-// A prompt shows what its turn took after it: what claude wrote, what it read anew, what it read
-// again from the cache. A slash command's turn shows none. A /compact compacts from the start.
+// A prompt keeps how many tokens its turn took (not drawn while the count is wrong). A slash
+// command's turn adds none. A /compact compacts from the start.
 func TestModelPromptTokens(t *testing.T) {
 	m, _ := modelNew(t, false)
 	modelPress(m, inputTyped("hi")...)
@@ -889,9 +920,6 @@ func TestModelPromptTokens(t *testing.T) {
 	if len(m.Chat) != 1 || m.Chat[0].Tokens != turn {
 		t.Fatalf("chat %+v", m.Chat)
 	}
-	if lines := drawEntry(m.Chat[0], 60); !strings.HasSuffix(lines[len(lines)-1], styleModeAuto.Render(" *7.3k↓ 562k+ 3.7M↻")) {
-		t.Errorf("drawn %q", lines)
-	}
 	m.known["compact"] = true
 	modelPress(m, inputTyped("/compact")...)
 	modelPress(m, inputKey("enter"))
@@ -903,16 +931,13 @@ func TestModelPromptTokens(t *testing.T) {
 	if m.Chat[0].Tokens != turn {
 		t.Errorf("a command's turn took the prompt's tokens: %+v", m.Chat)
 	}
-	// Then a prompt shows what its turn added to the process's count, its subagents' too.
+	// Then a prompt keeps what its turn added to the process's count, its subagents' too.
 	modelPress(m, inputTyped("more")...)
 	modelPress(m, inputKey("enter"))
 	all.Output, all.CacheRead = all.Output+2000, all.CacheRead+400000
 	modelEvents(m, protocol.Result{Usage: all, Turn: protocol.Usage{Output: 1000, CacheRead: 200000}})
 	if n := len(m.Chat); m.Chat[n-1].Tokens != (protocol.Usage{Output: 2000, CacheRead: 400000}) {
 		t.Errorf("the second prompt took %+v", m.Chat[n-1].Tokens)
-	}
-	if lines := drawEntry(m.Chat[len(m.Chat)-1], 60); !strings.HasSuffix(lines[len(lines)-1], styleModeAuto.Render(" *2k↓ 400k↻")) {
-		t.Errorf("a part of none goes: drawn %q", lines)
 	}
 	// An answer to claude's question is no prompt: the turn's tokens go after the prompt.
 	modelPress(m, inputTyped("ask")...)
@@ -924,11 +949,6 @@ func TestModelPromptTokens(t *testing.T) {
 	modelEvents(m, protocol.Result{Usage: all, Turn: protocol.Usage{Output: 300}})
 	if n := len(m.Chat); m.Chat[n-3].Tokens.Output != 300 || m.Chat[n-1].Tokens != (protocol.Usage{}) {
 		t.Errorf("tokens after the prompt %+v, after the answer %+v", m.Chat[n-3].Tokens, m.Chat[n-1].Tokens)
-	}
-	for n, want := range map[int]string{950: "950", 1234: "1.2k", 48000: "48k", 3400000: "3.4M", 500000000: "500M", 2000000000: "2B"} {
-		if got := drawTokens(n); got != want {
-			t.Errorf("drawTokens(%d) = %q, want %q", n, got, want)
-		}
 	}
 }
 
@@ -957,6 +977,12 @@ func TestModelFallback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(m.Chat, want) {
 		t.Errorf("chat %#v", m.Chat)
+	}
+	// Every call of main's names the model it runs on: the status and main's row keep up with it,
+	// past the Init of a turn that names the one asked for.
+	modelEvents(m, protocol.Init{SessionID: "s", Model: "claude-opus-5-5"}, protocol.Context{Model: "claude-sonnet-5-5", Tokens: 10})
+	if main := modelAgent(t, m, "main"); m.Status.Model != "claude-sonnet-5-5" || main.Model != "claude-sonnet-5-5" {
+		t.Errorf("after a call: status %q, main %q", m.Status.Model, main.Model)
 	}
 }
 

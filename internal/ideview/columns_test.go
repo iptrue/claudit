@@ -3,6 +3,7 @@ package ideview
 import (
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,47 +32,47 @@ func TestColumns(t *testing.T) {
 		return strings.Join(s, " ")
 	}
 	st := sampleState()
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main main:term" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main main:term" {
 		t.Errorf("main alone: %q", got)
 	}
 	cam := camera(st)
 	cam.Focus = ide.Browser
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main main:web" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main main:web" {
 		t.Errorf("main alone on the web: %q", got)
 	}
 	cam.Focus = ide.Editor
-	if got := keys(columns(st, camera(st), Options{Now: now}, 2*minColumn-1)); got != "main" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 2*minColumn-1, 15)); got != "main" {
 		t.Errorf("main alone, too narrow for two: %q", got)
 	}
 	term := cam.Term
 	cam.Term = ide.Term{}
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main" {
 		t.Errorf("main alone, no command run yet: %q", got)
 	}
 	cam.Term, cam.File, cam.Focus = term, "", ide.Terminal
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main:term" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main:term" {
 		t.Errorf("main alone, no file yet: %q", got)
 	}
 
 	st = multiState() // tests works in its terminal; lint has no workplace yet; docs is done
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main toolu_tests:term" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main toolu_tests:term" {
 		t.Errorf("multi: %q", got)
 	}
-	if got := keys(columns(st, camera(st), Options{Now: now}, 50)); got != "main" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 50, 15)); got != "main" {
 		t.Errorf("too narrow for two: %q", got)
 	}
 
 	// docs busy a moment ago in main's file shares main's column; later it is gone for good.
 	docs := findAgent(st, "a2")
 	docs.Active = now.Add(-time.Second)
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main toolu_tests:term" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main toolu_tests:term" {
 		t.Errorf("a file worked in by two: %q", got)
 	}
 	docs.File = root + "/README.md"
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main toolu_tests:term a2" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main toolu_tests:term a2" {
 		t.Errorf("docs a moment ago: %q", got)
 	}
-	if got := keys(columns(st, camera(st), Options{Now: now.Add(columnLinger)}, 200)); got != "main toolu_tests:term" {
+	if got := keys(columns(st, camera(st), Options{Now: now.Add(columnLinger)}, 200, 15)); got != "main toolu_tests:term" {
 		t.Errorf("docs long ago: %q", got)
 	}
 
@@ -79,8 +80,29 @@ func TestColumns(t *testing.T) {
 	lint := findAgent(st, "a1")
 	lint.File, lint.Active = root+"/docs/x.md", now
 	st.Agents[1].Activity, st.Agents[1].Active = "", now.Add(-5*time.Second)
-	if got := keys(columns(st, camera(st), Options{Now: now}, 200)); got != "main a1 a2" {
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 15)); got != "main a1 a2" {
 		t.Errorf("four: %q", got)
+	}
+	// Twice as high, the four go two above two; pinned, the camera's agent shows alone.
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 2*minRow)); got != "main toolu_tests:term a1 a2" {
+		t.Errorf("four in a grid: %q", got)
+	}
+	if got := tiles(4, 200, 2*minRow); !slices.Equal(got, []image.Rectangle{
+		image.Rect(0, 0, 100, minRow), image.Rect(100, 0, 200, minRow), image.Rect(0, minRow, 100, 2*minRow), image.Rect(100, minRow, 200, 2*minRow),
+	}) {
+		t.Errorf("tiles of four: %v", got)
+	}
+	if got := tiles(5, 200, 21); len(got) != 5 || got[2] != image.Rect(132, 0, 200, 10) || got[4] != image.Rect(100, 10, 200, 21) {
+		t.Errorf("tiles of five: %v", got)
+	}
+	out := Render(st, Options{Now: now}, 250, 2*minRow)
+	checkSize(t, "grid", out, 250, 2*minRow)
+	if rows := strings.Split(ansi.Strip(out), "\n"); strings.Count(rows[0], "╭") != 3 || strings.Count(rows[minRow], "╭") != 2 {
+		t.Errorf("not two above two:\n%s", ansi.Strip(out))
+	}
+	st.Pinned, st.Camera = true, "a1"
+	if got := keys(columns(st, camera(st), Options{Now: now}, 200, 2*minRow)); got != "a1" {
+		t.Errorf("pinned: %q", got)
 	}
 }
 

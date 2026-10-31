@@ -17,7 +17,7 @@ var (
 	Red    = lipgloss.Color("#f85149")
 	Orange = lipgloss.Color("#ffa657")
 	Yellow = lipgloss.Color("#e3b341")
-	Lime   = lipgloss.Color("#bfff00") // a terminal's prompt and caret
+	Lime   = lipgloss.Color("#bfff00") // the status dot, an enabled plugin
 	Green  = lipgloss.Color("#56d364")
 	Teal   = lipgloss.Color("#3fb9a0")
 	Cyan   = lipgloss.Color("#56d4dd")
@@ -28,28 +28,28 @@ var (
 
 // What each part of the screen takes from the palette.
 var (
-	Strong      = Yellow // emphasis in place of bold: titles, headers, **strong**; as bright as the auto mode
-	Dim         = Mix(Fg, Bg, 0.5)
-	Border      = Mix(Fg, Bg, 0.82)
-	BorderFocus = Mix(Fg, Bg, 0.6) // a pane in focus: a lighter grey, never white
-	SelBg       = Mix(Blue, Bg, 0.65)
-	SelBgDim    = Mix(Blue, Bg, 0.75) // a selection out of focus: the explorer's while its agent works elsewhere
-	LineBg      = Mix(Fg, Bg, 0.93)
-	AddedBg     = Mix(Green, Bg, 0.8) // a diff's added line
-	RemovedBg   = Mix(Red, Bg, 0.8)   // a diff's removed line
-	OK          = Green
-	Err         = Red
-	Warn        = Yellow
-	Sky         = Mix(Blue, Bright, 0.3) // the help title's gradient, links
+	Strong    = Yellow // emphasis in place of bold: titles, headers, **strong**; as bright as the auto mode
+	Dim       = Mix(Fg, Bg, 0.5)
+	Border    = Mix(Fg, Bg, 0.82) // every frame, in focus or not
+	SelBg     = Mix(Blue, Bg, 0.65)
+	SelBgDim  = Mix(Blue, Bg, 0.75) // a selection out of focus: the explorer's while its agent works elsewhere
+	LineBg    = Mix(Fg, Bg, 0.93)
+	AddedBg   = Mix(Green, Bg, 0.8) // a diff's added line
+	RemovedBg = Mix(Red, Bg, 0.8)   // a diff's removed line
+	OK        = Green
+	Err       = Red
+	Warn      = Yellow
+	Sky       = Mix(Blue, Bright, 0.3) // the help title's gradient, links
 
 	// Syntax: on the terminal's own background, never bold or italic.
 	Code    = Fg                       // names, operators, punctuation
 	Keyword = Mix(Orange, Dim, 0.18)   // a muted orange
 	String  = Mix(Green, Yellow, 0.45) // olive
 	Interp  = Mix(String, Bright, 0.7) // what a string interpolates: ${…}
-	Comment = Mix(Blue, Bg, 0.45)
+	Comment = Dim                      // grey, as the terminal's "# …" over a command
 	Number  = Sky
 	Func    = Mix(Violet, Blue, 0.15) // lavender: what is called
+	Type    = Blue                    // types and classes, as blue as the user's prompts
 )
 
 // Agents colours agents by their palette slot (ide.Agent.Color); slot 0 is the main agent.

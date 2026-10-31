@@ -40,45 +40,6 @@ func TestSoloPanes(t *testing.T) {
 	}
 }
 
-// A cut wipes the right column in behind a scanline in the camera's colour, then leaves it alone.
-// Split into workplaces, each wipes in on its own when its agent turns.
-func TestWipe(t *testing.T) {
-	multi := multiState()
-	multi.Agents[1].FocusAt = now.Add(-cutTime / 3)
-	out := Render(multi, Options{Now: now}, 120, 30)
-	if scan := lineWith(out, "━━━━"); !strings.Contains(scan, sgr("38", theme.Agents[1])) || strings.Contains(scan, sgr("38", theme.Agents[0])+"━") {
-		t.Fatalf("not tests' workplace alone wipes:\n%s", ansi.Strip(out))
-	}
-
-	st := sampleState()
-	st.CameraAt = now.Add(-cutTime / 3)
-	out = Render(st, Options{Now: now}, 120, 30)
-	checkSize(t, "wipe", out, 120, 30)
-	scan := lineWith(out, "━━━━")
-	if scan == "" || !strings.Contains(scan, sgr("38", theme.Agents[0])) {
-		t.Fatalf("no scanline in the camera's colour:\n%s", ansi.Strip(out))
-	}
-	lines := strings.Split(ansi.Strip(out), "\n")
-	if !strings.HasSuffix(strings.TrimRight(lines[len(lines)-2], " "), "│") {
-		t.Errorf("the explorer must not wipe: %q", lines[len(lines)-2])
-	}
-
-	// The agent turning to its terminal plays the cut too where one pane shows at a time (80 cells),
-	// not where its file and terminal stay side by side (120); a cut long gone does not.
-	st.CameraAt = now.Add(-time.Second)
-	st.Agents[0].FocusAt = now.Add(-cutTime / 2)
-	if !strings.Contains(ansi.Strip(Render(st, Options{Now: now}, 80, 30)), "━━━━") {
-		t.Error("no wipe after the agent turned to its terminal")
-	}
-	if strings.Contains(ansi.Strip(Render(st, Options{Now: now}, 120, 30)), "━━━━") {
-		t.Error("a wipe as the agent turned between panes side by side")
-	}
-	st.Agents[0].FocusAt = now.Add(-cutTime)
-	if strings.Contains(ansi.Strip(Render(st, Options{Now: now}, 80, 30)), "━━━━") {
-		t.Error("the wipe outlives cutTime")
-	}
-}
-
 // The camera's caret spins while its agent works: main by Options.Busy, others by their status.
 func TestSpinningCaret(t *testing.T) {
 	st := sampleState()
@@ -99,10 +60,10 @@ func TestSpinningCaret(t *testing.T) {
 	}
 
 	st.Agents[0].Focus = ide.Terminal
-	// The terminal's caret is lime, as its prompt.
-	if out := Render(st, Options{Now: now, Busy: true}, 100, 20); !strings.Contains(ansi.Strip(out), "$ go te"+frame) ||
-		!styled(out, frame, sgr("38", theme.Lime)) || reversed(out) {
-		t.Errorf("terminal caret is not a bare lime spin frame:\n%s", ansi.Strip(out))
+	// The terminal's caret is in the agent's colour too; 80 cells show the terminal alone.
+	if out := Render(st, Options{Now: now, Busy: true}, 80, 20); !strings.Contains(ansi.Strip(out), "$ go te"+frame) ||
+		!styled(out, frame, sgr("38", theme.Agents[0])) || reversed(out) {
+		t.Errorf("terminal caret is not a bare spin frame in the agent's colour:\n%s", ansi.Strip(out))
 	}
 	if out := Render(st, Options{Now: now}, 100, 20); !strings.Contains(ansi.Strip(out), "$ go te ") || reversed(out) {
 		t.Errorf("idle terminal has a caret:\n%s", ansi.Strip(out))
@@ -196,26 +157,38 @@ func termWith(lines ...ide.TermLine) string {
 	return Render(st, Options{}, 120, 30)
 }
 
-// A diff's changes go on green and red by their sign, their code in its colours, its hunks violet, the file's header in the
-// colour of headings and the rest of its header grey; the lines around a change are code.
+// A diff's changes show their sign green or red and their code in its colours, on no background
+// of their own; its hunks violet, the file's header in the colour of headings and the rest of its
+// header grey; the lines around a change are code.
 func TestTerminalDiff(t *testing.T) {
 	out := termWith(
 		ide.TermLine{Kind: ide.Meta, Text: "diff --git a/calc.go b/calc.go"},
 		ide.TermLine{Kind: ide.Meta, Text: "index 1a2b3c4..5d6e7f8 100644"},
 		ide.TermLine{Kind: ide.Hunk, Text: "@@ -1,4 +1,4 @@"},
 		ide.TermLine{Kind: ide.Code, Text: " func Div(a, b int) (int, error) {", Lang: "calc.go"},
-		ide.TermLine{Kind: ide.Removed, Text: "-    return a / b, nil"},
-		ide.TermLine{Kind: ide.Added, Text: "+    return 0, errors.New(\"pass\")"},
+		ide.TermLine{Kind: ide.Removed, Text: "-    return a / b, nil", Lang: "calc.go"},
+		ide.TermLine{Kind: ide.Added, Text: "+    return 0, errors.New(\"pass\")", Lang: "calc.go"},
 	)
 	for text, want := range map[string]string{
-		"diff --git a/calc.go b/calc.go":      sgr("38", theme.Strong),
-		"index 1a2b3c4..5d6e7f8 100644":       sgr("38", theme.Dim),
-		"@@ -1,4 +1,4 @@":                     sgr("38", theme.Violet),
-		"-    return a / b, nil":              sgr("48", theme.RemovedBg),
-		"+    return 0, errors.New(\"pass\")": sgr("48", theme.AddedBg),
+		"diff --git a/calc.go b/calc.go": sgr("38", theme.Strong),
+		"index 1a2b3c4..5d6e7f8 100644":  sgr("38", theme.Dim),
+		"@@ -1,4 +1,4 @@":                sgr("38", theme.Violet),
 	} {
 		if !styled(out, text, want) {
 			t.Errorf("%q is not coloured %s:\n%q", text, want, lineWith(out, text))
+		}
+	}
+	for sign, code := range map[string]string{"-": "    return a / b, nil", "+": "    return 0, errors.New(\"pass\")"} {
+		c := theme.Red
+		if sign == "+" {
+			c = theme.Green
+		}
+		l := lineWith(out, code)
+		if want := lipgloss.NewStyle().Foreground(c).Render(sign) + paint(code, langOf("calc.go")); !strings.Contains(l, want) {
+			t.Errorf("%s%s: want its sign in %v, its code as the editor draws it:\n%q", sign, code, c, l)
+		}
+		if strings.Contains(l, "48;2;") {
+			t.Errorf("%s%s has a background: %q", sign, code, l)
 		}
 	}
 	if l := lineWith(out, "func Div"); !strings.Contains(l, paint(" func Div(a, b int) (int, error) {", langOf("calc.go"))) {
@@ -256,6 +229,30 @@ func TestTerminalHit(t *testing.T) {
 	}
 }
 
+// What a row draws of its line (no runes terminals measure apart, tabs widened, broken bytes as
+// one mark) moves none of its colours: a hit's place and code, a diffstat's bar, a row cut short.
+func TestTerminalDrawnMarks(t *testing.T) {
+	out := termWith(ide.TermLine{Kind: ide.Match, Text: "docs/❤️.go:3:func main() {}", Lang: "docs/❤️.go", Prefix: len([]rune("docs/❤️.go:3:"))})
+	if l := lineWith(out, "❤.go:3:"); !styled(l, ":3:", sgr("38", theme.Dim)) || !strings.Contains(l, paint("func main() {}", goLang)) {
+		t.Errorf("a hit in a file with an emoji in its name: %q", l)
+	}
+	green, red := sgr("38", theme.Green), sgr("38", theme.Red)
+	out = termWith(ide.TermLine{Kind: ide.Stat, Text: " docs/❤️.md | 3 +++"}, ide.TermLine{Kind: ide.Stat, Text: " a\tb.go | 4 ++--"})
+	if l := lineWith(out, "❤.md"); !styled(l, "+++", green) {
+		t.Errorf("an emoji before the bar: %q", l)
+	}
+	if l := lineWith(out, "b.go"); !styled(l, "++", green) || !styled(l, "--", red) || styled(l, " 4", green) {
+		t.Errorf("a tab before the bar: %q", l)
+	}
+	line := " calc.go | 42 " + strings.Repeat("+", 22) + strings.Repeat("-", 20)
+	if l := statLine(sampleState(), "++++++---…", 30, line); !styled(l, "---", red) || styled(l, "++++++---", green) {
+		t.Errorf("a row cut short: %q", l)
+	}
+	if cs, _ := layout("a\xff\ufe0fb", 10, 0); join(cs) != "a\ufffdb" {
+		t.Errorf("a broken byte and a selector: %q", join(cs))
+	}
+}
+
 // Files named in plain output take their colour in the explorer, changed or not; a line that says
 // how things went keeps its own colour.
 func TestOutputFiles(t *testing.T) {
@@ -280,6 +277,118 @@ func TestOutputFiles(t *testing.T) {
 	}
 }
 
+// git's marks are in git's colours: of a short status, the staged column green, the unstaged one
+// and the untracked red; of a diffstat, the "+" green and the "-" red, wrapped rows too.
+func TestTerminalGitMarks(t *testing.T) {
+	st := sampleState()
+	cam := st.Agents[0]
+	cam.Focus = ide.Terminal
+	long := " " + strings.Repeat("deep/", 12) + "calc.go | 42 " + strings.Repeat("+", 30) + strings.Repeat("-", 12)
+	cam.Term.Lines = append(cam.Term.Lines,
+		ide.TermLine{Kind: ide.Status, Text: "A  added.go"},
+		ide.TermLine{Kind: ide.Status, Text: " D deleted.go"},
+		ide.TermLine{Kind: ide.Status, Text: "?? new.txt"},
+		ide.TermLine{Kind: ide.Stat, Text: " calc.go | 7 ++++++-"},
+		ide.TermLine{Kind: ide.Stat, Text: long},
+	)
+	out := Render(st, Options{}, 100, 30)
+	green, red := sgr("38", theme.Green), sgr("38", theme.Red)
+	for _, c := range []struct{ line, text, color string }{
+		{"added.go", "A", green}, {"deleted.go", "D", red}, {"new.txt", "?", red},
+		{"| 7", "++++++", green}, {"| 7", "-", red},
+	} {
+		if l := lineWith(out, c.line); !styled(l, c.text, c.color) {
+			t.Errorf("%q in %q: not in its colour: %q", c.text, c.line, l)
+		}
+	}
+	// The long line wraps, its bar too: every row of it is in the bar's colours.
+	if strings.Count(ansi.Strip(out), "deep/") < 12 || lineWith(out, "deep/") == lineWith(out, "+++") {
+		t.Fatalf("the long diffstat line does not wrap before its bar:\n%s", ansi.Strip(out))
+	}
+	for _, l := range strings.Split(out, "\n") {
+		plain := ansi.Strip(l)
+		if strings.Contains(plain, "++") && !styled(l, "++", green) || strings.Contains(plain, "--") && !styled(l, "--", red) {
+			t.Errorf("a row of a diffstat bar: %q", plain)
+		}
+	}
+}
+
+// A command shows in the shell's colours, a here-document's body in those of its language; what
+// has no colour of its own is white, as typed, the line being typed too.
+func TestTerminalCommandColours(t *testing.T) {
+	st := sampleState()
+	cam := st.Agents[0]
+	cam.Focus = ide.Terminal
+	cam.Term = ide.Term{Lines: []ide.TermLine{
+		{Kind: ide.Command, Text: `for f in *.go; do echo "$f"; done`},
+		{Kind: ide.Command, Text: "python3 - <<'EOF'"},
+		{Kind: ide.More, Text: "def edit(p):", Lang: ".py"},
+		{Kind: ide.More, Text: "EOF"},
+	}, Input: `git commit -m "fix"`}
+	out := Render(st, Options{}, 100, 30)
+	kw, str, white := sgr("38", theme.Keyword), sgr("38", theme.String), sgr("38", theme.Bright)
+	for _, c := range []struct{ text, color string }{
+		{"for", kw}, {`"$f"`, str}, {" echo ", white}, {"python3 - <<", white}, {"'EOF'", str},
+		{"def", kw}, {"edit", sgr("38", theme.Func)}, {"EOF", white}, {"git commit -m ", white}, {`"fix"`, str},
+	} {
+		if !styled(out, c.text, c.color) {
+			t.Errorf("%q is not in its colour:\n%s", c.text, lineWith(out, c.text))
+		}
+	}
+}
+
+// While its agent types, selects or deletes text, a caret is a solid block of the agent's colour,
+// the cell's own text dark on it, right after the text at the end of a line: in the editor, the
+// terminal and the address bar. Once the agent has stopped for longer than an edit pauses, it spins.
+func TestTypingCaret(t *testing.T) {
+	st := sampleState()
+	c := mainBuf(st).Carets["main"]
+	c.Sel = nil
+	st.Agents[0].TypedAt = now.Add(-100 * time.Millisecond)
+	o := Options{Now: now, Busy: true}
+	frame, block := spinFrame(now), sgr("48", theme.Agents[0])
+	out := Render(st, o, 100, 20)
+	if l := lineWith(out, "rintln"); strings.Contains(ansi.Strip(out), frame) || !styled(l, "p", sgr("38", theme.Bg), block) ||
+		!strings.Contains(ansi.Strip(l), "println") {
+		t.Errorf("the editor's caret is not a block over its cell: %q", l)
+	}
+	c.Pos.Col = 23 // the end of "\tprintln("hi") // greet"
+	l := lineWith(Render(st, o, 100, 20), "greet")
+	var before string
+	for _, m := range sgrRe.FindAllStringIndex(l, -1) {
+		if strings.Contains(l[m[0]:m[1]], block) {
+			before = ansi.Strip(l[:m[0]])
+			break
+		}
+	}
+	if !strings.HasSuffix(before, "// greet") {
+		t.Errorf("the block is not right after the end of the line: %q", l)
+	}
+
+	st.Agents[0].Focus = ide.Terminal
+	if out := Render(st, o, 80, 20); strings.Contains(ansi.Strip(out), frame) || !styled(lineWith(out, "$ go te"), " ", block) {
+		t.Errorf("the terminal's caret is not a block: %q", lineWith(out, "$ go te"))
+	}
+	br := browserState()
+	br.Agents[0].Page, br.Agents[0].TypedAt = ide.Page{URL: "https://go.dev"}, st.Agents[0].TypedAt
+	if out := Render(br, o, 100, 20); strings.Contains(ansi.Strip(out), frame) || !styled(lineWith(out, "go.dev"), " ", sgr("48", theme.OK)) {
+		t.Errorf("the address bar's caret is not a block: %q", lineWith(out, "go.dev"))
+	}
+
+	st.Agents[0].Focus, st.Agents[0].TypedAt = ide.Editor, now.Add(-typeHold)
+	if out := Render(st, o, 100, 20); !strings.Contains(ansi.Strip(out), frame) || strings.Contains(out, block) {
+		t.Errorf("a caret that has stopped typing does not spin:\n%s", ansi.Strip(out))
+	}
+}
+
+// What a command does goes grey above its prompt.
+func TestTerminalComment(t *testing.T) {
+	out := termWith(ide.TermLine{Kind: ide.Comment, Text: "# Run the tests"}, ide.TermLine{Kind: ide.Command, Text: "go test ./..."})
+	if !styled(out, "# Run the tests", sgr("38", theme.Dim)) || strings.Contains(lineWith(out, "# Run"), "$") {
+		t.Errorf("the comment is not grey, or has a prompt: %q", lineWith(out, "# Run"))
+	}
+}
+
 // A terminal's text keeps a cell of air from its frame.
 func TestTerminalAir(t *testing.T) {
 	st := sampleState()
@@ -289,13 +398,13 @@ func TestTerminalAir(t *testing.T) {
 	}
 }
 
-// In a terminal the prompt is lime, the commands typed after it white.
+// In a terminal the prompt is in its agent's colour, the commands typed after it white.
 func TestTerminalCommandWhite(t *testing.T) {
 	st := sampleState()
 	st.Agents[0].Focus = ide.Terminal
 	out := Render(st, Options{}, 100, 20)
-	if !styled(out, "go build ./...", sgr("38", theme.Bright)) || !styled(out, "go te", sgr("38", theme.Bright)) || !styled(out, "$ ", sgr("38", theme.Lime)) {
-		t.Errorf("prompt not lime or commands not white:\n%q", out)
+	if !styled(out, "go build ./...", sgr("38", theme.Bright)) || !styled(out, "go te", sgr("38", theme.Bright)) || !styled(out, "$ ", sgr("38", agentColor(st.Agents[0]))) {
+		t.Errorf("prompt not in the agent's colour or commands not white:\n%q", out)
 	}
 }
 

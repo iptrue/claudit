@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/pixelbender/claudit/internal/ideview"
 	"github.com/pixelbender/claudit/internal/theme"
 )
 
@@ -22,6 +23,10 @@ func drawCheckSize(t *testing.T, s string, w, h int) {
 	for i, l := range lines {
 		if got := ansi.StringWidth(l); got != w {
 			t.Fatalf("%dx%d: line %d is %d cells: %q", w, h, i, got, ansi.Strip(l))
+		}
+		// The renderer counts by wcwidth where the terminal does not report its own (iTerm2).
+		if got := ansi.StringWidthWc(l); got != w {
+			t.Fatalf("%dx%d: line %d is %d cells by wcwidth: %q", w, h, i, got, ansi.Strip(l))
 		}
 	}
 }
@@ -37,7 +42,7 @@ func drawPlainLines(s string) []string {
 
 var drawTestEntries = []ChatEntry{
 	{Kind: UserEntry, Text: "Hello! Please fix the division function in calc.py"},
-	{Kind: AssistantEntry, Text: "这是一个很长的中文句子没有空格需要被折行处理 and some English 😀😀😀 emoji ❤️ 👨‍👩‍👧 🇺🇸"},
+	{Kind: AssistantEntry, Text: "这是一个很长的句子没有空格需要被折行处理 and some words 😀😀😀 emoji ❤️ 👨‍👩‍👧"},
 	{Kind: AssistantEntry, Text: ""},
 	{Kind: AssistantEntry, Text: "## Summary\n\n- **calc.py:** `div(a, b)` returns *a / b*\n- see [docs](https://example.com)\n\n" +
 		"| Category | Tokens | Percentage |\n|---|---|---|\n| System prompt | 3.3k | 0.3% |\n| Free space | 949.7k | 95.0% |\n\n" +
@@ -50,12 +55,12 @@ func TestChatSize(t *testing.T) {
 	for _, w := range []int{1, 2, 3, 4, 5, 7, 10, 13, 20, 37, 40, 80, 133} {
 		for _, h := range []int{1, 2, 5, 17, 60} {
 			for _, scroll := range []int{-3, 0, 1, 7, 1000} {
-				out, _ := renderChat(new(chatCache), drawTestEntries, w, h, scroll)
+				out, _, _ := renderChat(new(chatCache), drawTestEntries, w, h, scroll)
 				drawCheckSize(t, out, w, h)
 			}
 		}
 	}
-	out, maxScroll := renderChat(new(chatCache), nil, 30, 4, 0)
+	out, maxScroll, _ := renderChat(new(chatCache), nil, 30, 4, 0)
 	drawCheckSize(t, out, 30, 4)
 	if maxScroll != 0 {
 		t.Errorf("empty chat: maxScroll = %d", maxScroll)
@@ -64,20 +69,21 @@ func TestChatSize(t *testing.T) {
 
 func TestChatWrapKeepsText(t *testing.T) {
 	tests := []struct{ name, text string }{
-		{"latin", "Hello world, this is a long line in plain English with no surprises"},
-		{"cjk", "这是一个很长的中文句子没有空格需要被折行处理"},
-		{"emoji", "ab😀😀😀😀😀😀 ❤️❤️❤️ 👨‍👩‍👧👨‍👩‍👧 🇺🇸🇺🇸 done"},
+		{"ascii", "Hello world, this is a long line in plain words with no surprises"},
+		{"wide", "这是一个很长的句子没有空格需要被折行处理"},
+		{"emoji", "ab😀😀😀😀😀😀 ❤️❤️❤️ 👨‍👩‍👧👨‍👩‍👧 done"},
 		{"long word", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb"},
 	}
 	for _, tt := range tests {
 		for _, w := range []int{8, 9, 11, 14, 27} { // the reply's "› " takes 2 cells of each
-			out, _ := renderChat(new(chatCache), []ChatEntry{{Kind: AssistantEntry, Text: tt.text}}, w, 40, 0)
+			out, _, _ := renderChat(new(chatCache), []ChatEntry{{Kind: AssistantEntry, Text: tt.text}}, w, 40, 0)
 			drawCheckSize(t, out, w, 40)
 			var got strings.Builder
 			for _, l := range drawPlainLines(out) {
 				got.WriteString(strings.ReplaceAll(l, " ", ""))
 			}
-			if want := "›" + strings.ReplaceAll(tt.text, " ", ""); got.String() != want {
+			text := strings.Join(strings.FieldsFunc(tt.text, ideview.Undrawn), "") // ❤️ draws as ❤
+			if want := "›" + strings.ReplaceAll(text, " ", ""); got.String() != want {
 				t.Errorf("%s at width %d: text changed:\n got %q\nwant %q", tt.name, w, got.String(), want)
 			}
 		}
@@ -91,30 +97,30 @@ func TestChatScroll(t *testing.T) {
 	}
 	// 10 entries, no blank lines between them: 10 lines.
 	const h = 5
-	out, maxScroll := renderChat(new(chatCache), entries, 30, h, 0)
+	out, maxScroll, _ := renderChat(new(chatCache), entries, 30, h, 0)
 	if maxScroll != 10-h {
 		t.Fatalf("maxScroll = %d, want %d", maxScroll, 10-h)
 	}
 	if lines := drawPlainLines(out); lines[h-1] != "  › line 9" {
 		t.Errorf("tail: bottom line = %q", lines[h-1])
 	}
-	top, _ := renderChat(new(chatCache), entries, 30, h, maxScroll)
+	top, _, _ := renderChat(new(chatCache), entries, 30, h, maxScroll)
 	if lines := drawPlainLines(top); lines[0] != "  › line 0" {
 		t.Errorf("scrolled to the top: first line = %q", lines[0])
 	}
-	if over, _ := renderChat(new(chatCache), entries, 30, h, maxScroll+50); over != top {
+	if over, _, _ := renderChat(new(chatCache), entries, 30, h, maxScroll+50); over != top {
 		t.Error("scroll beyond maxScroll is not clamped")
 	}
-	if under, _ := renderChat(new(chatCache), entries, 30, h, -5); under != out {
+	if under, _, _ := renderChat(new(chatCache), entries, 30, h, -5); under != out {
 		t.Error("negative scroll is not clamped")
 	}
-	one, _ := renderChat(new(chatCache), entries, 30, h, 2)
+	one, _, _ := renderChat(new(chatCache), entries, 30, h, 2)
 	if lines := drawPlainLines(one); lines[h-1] != "  › line 7" {
 		t.Errorf("scroll 2: bottom line = %q", lines[h-1])
 	}
 
 	// A short log is tail-aligned and cannot scroll.
-	short, maxScroll := renderChat(new(chatCache), entries[:1], 30, h, 3)
+	short, maxScroll, _ := renderChat(new(chatCache), entries[:1], 30, h, 3)
 	if maxScroll != 0 {
 		t.Errorf("short log: maxScroll = %d", maxScroll)
 	}
@@ -130,7 +136,7 @@ func TestChatDense(t *testing.T) {
 		{Kind: AssistantEntry, Text: "Done.\n\n- calc.py: div"},
 		{Kind: CommandEntry, Text: "one\n\ntwo"},
 	}
-	out, _ := renderChat(new(chatCache), entries, 40, 7, 0)
+	out, _, _ := renderChat(new(chatCache), entries, 40, 7, 0)
 	want := []string{"  › fix it", "    please", "  › Done.", "    • calc.py: div", "  › one", "    two"}
 	if got := drawPlainLines(out)[1:]; !slices.Equal(got, want) {
 		t.Errorf("chat %q, want %q", got, want)
@@ -148,7 +154,7 @@ func TestChatGap(t *testing.T) {
 		{Kind: CommandEntry, Text: "out"},
 		{Kind: UserEntry, Text: "four", Queued: true},
 	}
-	out, _ := renderChat(new(chatCache), entries, 40, 9, 0)
+	out, _, _ := renderChat(new(chatCache), entries, 40, 9, 0)
 	want := []string{"  › one", "  › two", "  › reply", "", "  › three", "  › out", "", "  › four"}
 	if got := drawPlainLines(out)[1:]; !slices.Equal(got, want) {
 		t.Errorf("chat %q, want %q", got, want)
@@ -168,14 +174,14 @@ func TestChatGap(t *testing.T) {
 		{Kind: CaretEntry, Text: "⠋"},
 	}
 	want = []string{"  › said", "  › Which?", "  › this", "", "  › And?", "  › that", "", "  › next", "    ⠋"}
-	out, _ = renderChat(new(chatCache), entries, 40, len(want), 0)
+	out, _, _ = renderChat(new(chatCache), entries, 40, len(want), 0)
 	if got := drawPlainLines(out); !slices.Equal(got, want) {
 		t.Errorf("answers %q, want %q", got, want)
 	}
 }
 
 func TestChatEntries(t *testing.T) {
-	out, _ := renderChat(new(chatCache), drawTestEntries, 60, 40, 0)
+	out, _, _ := renderChat(new(chatCache), drawTestEntries, 60, 40, 0)
 	plain := strings.Join(drawPlainLines(out), "\n")
 	for _, want := range []string{
 		"› Hello!",
@@ -213,6 +219,14 @@ func TestChatReplyWhite(t *testing.T) {
 	}
 }
 
+// What a Bash call says it does is light lime, as typed: no markdown, its gutter as a reply's.
+func TestChatBashLime(t *testing.T) {
+	lines := drawEntry(ChatEntry{Kind: AssistantEntry, Text: "Run `go test` in **sub**", Bash: true}, 60)
+	if want := styleReply.Render("› ") + styleBash.Render("Run `go test` in **sub**"); len(lines) != 1 || lines[0] != want {
+		t.Errorf("bash entry %q, want %q", lines, want)
+	}
+}
+
 func TestChatMarkdownWidth(t *testing.T) {
 	src := drawTestEntries[3].Text + "\n\n1. first item with a long tail of words that has to wrap\n   - nested **bold item** too\n" +
 		"# 👨‍👩‍👧 heading with emoji and 1️⃣ keycaps\n```\nunterminated fence"
@@ -246,6 +260,7 @@ func TestChatInput(t *testing.T) {
 		{"wide runes", "你好世界", 2, 30, 6, "› 你好世界"},
 		{"emoji", "😀a", 1, 30, 4, "› 😀a"},
 		{"newline", "a\nb", 3, 30, 5, "› a↵b"},
+		{"emoji sequences", "a❤️👍🏽b", 3, 30, 4, "› a❤👍b"}, // without what terminals measure apart
 		{"long line, caret at start", strings.Repeat("x", 100), 0, 20, 2, "› xxxxxxxxxxxxxxxxxx"},
 		{"long line, caret at end", strings.Repeat("x", 100), 100, 20, 19, "› xxxxxxxxxxxxxxxxx"},
 		{"long wide line, caret at end", strings.Repeat("界", 50), 50, 20, 18, "› 界界界界界界界界"},
@@ -297,7 +312,7 @@ func TestChatStatus(t *testing.T) {
 	// Model, limits, the steady part; what claude does last, without the agents at work or the camera.
 	for _, want := range []string{
 		"● claude-sonnet-4-5 · 5h 9% · 7d 58% · replay · ⠸ thinking  ",
-		"shift+tab mode · tab agents · / commands · F1 help · esc x2 quit",
+		"shift+tab mode · / commands · F1 help · esc x2 quit",
 	} {
 		if !strings.Contains(ansi.Strip(wide), want) {
 			t.Errorf("wide status %q lacks %q", ansi.Strip(wide), want)
@@ -337,7 +352,7 @@ func TestChatStatus(t *testing.T) {
 	for _, state := range []string{"idle", "running Bash", "running a very long tool name indeed"} {
 		st := st
 		st.State = state
-		if got := drawPlainLines(renderStatus(st, drawHintsPrompt, 150))[0]; !strings.HasSuffix(got, "tab agents · / commands · F1 help · esc x2 quit") {
+		if got := drawPlainLines(renderStatus(st, drawHintsPrompt, 150))[0]; !strings.HasSuffix(got, "shift+tab mode · / commands · F1 help · esc x2 quit") {
 			t.Errorf("%s: hints changed: %q", state, got)
 		}
 	}
@@ -457,12 +472,12 @@ func TestChatCache(t *testing.T) {
 	}
 	renderChat(c, entries, 30, 6, 0)
 	entries[1].Text += "lo **there**"
-	out, _ := renderChat(c, entries, 30, 6, 0)
-	if want, _ := renderChat(new(chatCache), entries, 30, 6, 0); out != want {
+	out, _, _ := renderChat(c, entries, 30, 6, 0)
+	if want, _, _ := renderChat(new(chatCache), entries, 30, 6, 0); out != want {
 		t.Fatalf("cached render\n%s\nwant\n%s", out, want)
 	}
-	narrow, _ := renderChat(c, entries, 12, 6, 0)
-	if want, _ := renderChat(new(chatCache), entries, 12, 6, 0); narrow != want {
+	narrow, _, _ := renderChat(c, entries, 12, 6, 0)
+	if want, _, _ := renderChat(new(chatCache), entries, 12, 6, 0); narrow != want {
 		t.Fatalf("after a resize\n%s\nwant\n%s", narrow, want)
 	}
 }
@@ -476,7 +491,7 @@ func TestChatTimes(t *testing.T) {
 		{Kind: AssistantEntry, Text: strings.Repeat("word ", 30), At: at.Add(time.Minute)},
 		{Kind: CommandEntry, Text: "no time"},
 	}
-	out, _ := renderChat(new(chatCache), entries, 60, 10, 0)
+	out, _, _ := renderChat(new(chatCache), entries, 60, 10, 0)
 	lines := drawPlainLines(out)
 	var timed []string
 	for _, l := range lines {
@@ -498,7 +513,7 @@ func TestChatTimes(t *testing.T) {
 	if i := strings.Index(lines[len(lines)-2], "14:08"); i >= 0 || ansi.StringWidth(timed[0]) != 60-2 {
 		t.Errorf("time on a wrapped line, or not at the right: %q", lines)
 	}
-	if narrow, _ := renderChat(new(chatCache), entries, 25, 10, 0); strings.Contains(ansi.Strip(narrow), "14:0") {
+	if narrow, _, _ := renderChat(new(chatCache), entries, 25, 10, 0); strings.Contains(ansi.Strip(narrow), "14:0") {
 		t.Errorf("a narrow chat shows times:\n%s", ansi.Strip(narrow))
 	}
 }

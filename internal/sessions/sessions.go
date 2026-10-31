@@ -115,7 +115,8 @@ type Message struct {
 }
 
 // History reads what was said in conversation id of dir, oldest first: the prompts and the main
-// agent's replies, without tool calls and without what subagents said.
+// agent's replies, what its Bash calls say they do among them, without the calls themselves and
+// without what subagents said.
 func History(dir, id string) ([]Message, error) {
 	data, err := os.ReadFile(filepath.Join(dir, id+".jsonl"))
 	if err != nil {
@@ -168,21 +169,29 @@ func History(dir, id string) ([]Message, error) {
 	return out, nil
 }
 
-// texts are the text blocks of message content: a plain string, or a list of blocks.
+// texts are the text blocks of message content, a plain string or a list of blocks, and what a
+// Bash call among them says it does.
 func texts(raw json.RawMessage) []string {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		return []string{s}
 	}
 	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string `json:"type"`
+		Text  string `json:"text"`
+		Name  string `json:"name"`
+		Input struct {
+			Description string `json:"description"`
+		} `json:"input"`
 	}
 	_ = json.Unmarshal(raw, &blocks) // anything else holds no text
 	var out []string
 	for _, b := range blocks {
-		if b.Type == "text" {
+		switch {
+		case b.Type == "text":
 			out = append(out, b.Text)
+		case b.Type == "tool_use" && b.Name == "Bash":
+			out = append(out, b.Input.Description) // none said: blank, it goes
 		}
 	}
 	return out

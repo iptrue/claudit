@@ -99,6 +99,9 @@ func TestHistory(t *testing.T) {
 		`{"type":"assistant","isSidechain":false,"message":{"model":"m","content":[{"type":"thinking","thinking":"hm"}]}}`,
 		`{"type":"assistant","isSidechain":false,"message":{"model":"m","content":[{"type":"text","text":"Reading calc.py."}]}}`,
 		`{"type":"assistant","isSidechain":false,"message":{"model":"m","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}`,
+		`{"type":"assistant","isSidechain":false,"message":{"model":"m","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls","description":"List the files"}}]}}`,
+		`{"type":"assistant","isSidechain":false,"message":{"model":"m","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"pwd"}}]}}`,
+		`{"type":"assistant","isSidechain":true,"message":{"model":"m","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"ls","description":"a subagent's"}}]}}`,
 		`{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}}`,
 		`{"type":"assistant","isSidechain":true,"message":{"model":"m","content":[{"type":"text","text":"a subagent"}]}}`,
 		`{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`,
@@ -122,6 +125,7 @@ func TestHistory(t *testing.T) {
 	want := []Message{
 		{Role: Prompt, Text: "add div", At: time.Date(2026, 10, 30, 7, 0, 14, 347e6, time.UTC)},
 		{Role: Reply, Text: "Reading calc.py."},
+		{Role: Reply, Text: "List the files"}, // what a Bash call says it does
 		{Role: Cut},
 		{Role: Prompt, Text: "/model haiku"},
 		{Role: Output, Text: "Set model to haiku"},

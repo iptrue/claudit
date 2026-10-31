@@ -11,7 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/pixelbender/claudit/internal/protocol"
+	"github.com/pixelbender/claudit/internal/ideview"
 	"github.com/pixelbender/claudit/internal/theme"
 )
 
@@ -19,6 +19,9 @@ var drawSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 // styleYou is the colour of the user's prompts, as Claude Code labels them; claude's replies are white.
 var styleYou = lipgloss.NewStyle().Foreground(theme.Blue)
+
+// styleBash is the colour of what a Bash call of main's says it does: the green of strings in code.
+var styleBash = lipgloss.NewStyle().Foreground(theme.String)
 
 // chatCache keeps the drawn lines of each chat entry, so a frame redraws only the entries that changed.
 type chatCache struct {
@@ -60,15 +63,16 @@ func drawChatWidths(width int) (text, at int) {
 // drawChatCount is how many lines the conversation takes width cells wide.
 func drawChatCount(cache *chatCache, entries []ChatEntry, width int) int {
 	tw, _ := drawChatWidths(width)
-	lines, _ := drawChatLines(cache, entries, tw, 0)
+	lines, _, _ := drawChatLines(cache, entries, tw, 0)
 	return len(lines)
 }
 
 // drawChatLines are the lines of the conversation tw cells wide, and beside each the time its
-// entry was said when it is the entry's first and aw leaves room for it. A blank line sets the
-// user's prompts apart from what claude said before them; claude's caret stands in its place. An
-// answer to a popup's question sticks to the question instead, and the blank line goes after it.
-func drawChatLines(cache *chatCache, entries []ChatEntry, tw, aw int) (lines, times []string) {
+// entry was said when it is the entry's first and aw leaves room for it, and the index of the
+// entry it draws (-1 for none). A blank line sets the user's prompts apart from what claude said
+// before them; claude's caret stands in its place. An answer to a popup's question sticks to the
+// question instead, and the blank line goes after it.
+func drawChatLines(cache *chatCache, entries []ChatEntry, tw, aw int) (lines, times []string, owners []int) {
 	prev := ChatEntry{Kind: UserEntry}
 	for i, e := range entries {
 		drawn := cache.draw(i, e, tw)
@@ -77,7 +81,7 @@ func drawChatLines(cache *chatCache, entries []ChatEntry, tw, aw int) (lines, ti
 		}
 		prompt := e.Kind == UserEntry && !e.Answer && prev.Kind != UserEntry && prev.Kind != CaretEntry
 		if (prompt || prev.Answer) && len(lines) > 0 {
-			lines, times = append(lines, ""), append(times, "")
+			lines, times, owners = append(lines, ""), append(times, ""), append(owners, -1)
 		}
 		prev = e
 		for j, l := range drawn {
@@ -85,36 +89,37 @@ func drawChatLines(cache *chatCache, entries []ChatEntry, tw, aw int) (lines, ti
 			if j == 0 && aw > 0 && !e.At.IsZero() {
 				at = styleDim.Render(e.At.Format("15:04"))
 			}
-			lines, times = append(lines, l), append(times, at)
+			lines, times, owners = append(lines, l), append(times, at), append(owners, i)
 		}
 	}
-	return lines, times
+	return lines, times, owners
 }
 
 // renderChat draws the tail of the conversation, scrolled up by scroll lines, into exactly width×height cells:
 // each entry with the time it was said grey at the right of its first line. maxScroll is the largest
-// scroll that still shows something new.
-func renderChat(cache *chatCache, entries []ChatEntry, width, height, scroll int) (out string, maxScroll int) {
+// scroll that still shows something new; shown is the index of the entry each row draws, -1 for none.
+func renderChat(cache *chatCache, entries []ChatEntry, width, height, scroll int) (out string, maxScroll int, shown []int) {
 	tw, aw := drawChatWidths(width)
-	lines, times := drawChatLines(cache, entries, tw, aw)
+	lines, times, owners := drawChatLines(cache, entries, tw, aw)
 
 	maxScroll = max(0, len(lines)-height)
 	scroll = min(max(scroll, 0), maxScroll)
 	end := len(lines) - scroll
 	from := max(0, end-height)
-	rows := make([]string, height)
+	rows, shown := make([]string, height), make([]int, height)
 	top := height - (end - from) // tail-aligned: short logs sit right above the input
 	for i := range rows {
 		var l string
+		shown[i] = -1
 		if i >= top {
-			l = "  " + lines[from+i-top]
+			l, shown[i] = "  "+lines[from+i-top], owners[from+i-top]
 			if at := times[from+i-top]; at != "" {
 				l = "  " + drawFit(lines[from+i-top], tw) + "  " + at
 			}
 		}
 		rows[i] = drawFit(l, width)
 	}
-	return strings.Join(rows, "\n"), maxScroll
+	return strings.Join(rows, "\n"), maxScroll, shown
 }
 
 // drawEntry renders one chat entry into styled lines of at most w cells: a prompt as typed (grey
@@ -138,20 +143,17 @@ func drawEntry(e ChatEntry, w int) []string {
 			}
 			lines[i] = st.Render(prefix + l)
 		}
-		if took := drawTurnTokens(e.Tokens); took != "" { // what its turn took, after it, as the auto mode is drawn
-			tokens := " *" + took
-			if n := len(lines) - 1; ansi.StringWidth(lines[n])+ansi.StringWidth(tokens) <= w {
-				lines[n] += styleModeAuto.Render(tokens)
-			} else {
-				lines = append(lines, "  "+styleModeAuto.Render(tokens[1:]))
-			}
-		}
 		return lines
 	case AssistantEntry:
 		if strings.TrimSpace(e.Text) == "" {
 			return nil // a text block that has not streamed anything yet
 		}
-		lines := drawDense(drawMarkdown(e.Text, w-2))
+		var lines []string
+		if e.Bash {
+			lines = drawStyled(drawDense(drawWrap(e.Text, w-2)), styleBash.Render)
+		} else {
+			lines = drawDense(drawMarkdown(e.Text, w-2))
+		}
 		for i, l := range lines {
 			gutter := "  "
 			if i == 0 {
@@ -171,7 +173,8 @@ func drawEntry(e ChatEntry, w int) []string {
 		}
 		return lines
 	case CaretEntry:
-		return []string{"  " + styleReply.Render(e.Text)} // under where claude's next words go
+		// Under where claude's next words go, in main's colour: it is the first agent.
+		return []string{"  " + lipgloss.NewStyle().Foreground(drawAgentColor(0)).Render(e.Text)}
 	}
 	return nil
 }
@@ -201,28 +204,32 @@ func renderInput(in *Input, width int, placeholder string, dim bool) (out string
 	if len(in.Text) == 0 {
 		return drawFit(prompt+styleDim.Render(placeholder), width), min(2, width-1)
 	}
-	disp := drawInputRunes(in.Text)
-	cur := min(max(in.Cursor, 0), len(disp))
+	disp, cur := drawInputRunes(in.Text, in.Cursor)
 	start := drawScroll(disp, cur, width-2)
 	shown := ansi.Truncate(string(disp[start:]), max(0, width-2), "")
 	x := 2 + ansi.StringWidth(string(disp[start:cur]))
 	return drawFit(prompt+text.Render(shown), width), min(x, width-1)
 }
 
-// drawInputRunes maps the field's runes one to one onto printable ones: '↵' for newlines, ' ' for other controls.
-func drawInputRunes(text []rune) []rune {
-	out := make([]rune, len(text))
+// drawInputRunes is what a field shows of its runes, and where its cursor falls among them: '↵'
+// for newlines, ' ' for other controls, no ideview.Undrawn runes.
+func drawInputRunes(text []rune, cursor int) ([]rune, int) {
+	out, cur := make([]rune, 0, len(text)), 0
 	for i, r := range text {
 		switch {
+		case ideview.Undrawn(r):
+			continue
 		case r == '\n':
-			out[i] = '↵'
+			r = '↵'
 		case unicode.IsControl(r):
-			out[i] = ' '
-		default:
-			out[i] = r
+			r = ' '
 		}
+		if i < cursor {
+			cur++
+		}
+		out = append(out, r)
 	}
-	return out
+	return out, cur
 }
 
 // drawScroll returns the first rune to show so that the text before cur and the caret cell fit in avail cells.
@@ -313,7 +320,12 @@ func renderStatus(st Status, hints []string, width int) string {
 	join := func() string { return dot + " " + strings.Join(slices.Concat(steady, moving), sep) }
 
 	// The hints that fit beside the steady part and drawStatusMoving cells of the rest: they do not
-	// come and go as the rest changes size. The rest is cut to the room they leave.
+	// come and go as the rest changes size. The rest is cut to the room they leave. A copy just
+	// made has its note there instead, light blue, fading.
+	hintStyle := styleDim
+	if st.Noted > 0 {
+		hints, hintStyle = []string{drawNoted}, lipgloss.NewStyle().Foreground(theme.Mix(theme.Bg, copiedColor, st.Noted))
+	}
 	inner := width - 4
 	budget := ansi.StringWidth(dot + " " + strings.Join(steady, sep))
 	if len(moving) > 0 {
@@ -337,7 +349,7 @@ func renderStatus(st Status, hints []string, width int) string {
 	}
 	if len(hints) > 0 {
 		h := strings.Join(hints, " · ")
-		line += strings.Repeat(" ", max(0, inner-ansi.StringWidth(line)-ansi.StringWidth(h))) + styleDim.Render(h)
+		line += strings.Repeat(" ", max(0, inner-ansi.StringWidth(line)-ansi.StringWidth(h))) + hintStyle.Render(h)
 	}
 	return drawFit("  "+line, width)
 }
@@ -383,38 +395,6 @@ func drawUsage(usage string) string {
 
 // drawExtraUsage ends Status.Usage while extra usage pays past a window's limit.
 const drawExtraUsage = "extra usage"
-
-// drawTurnTokens is what a turn took, by what the tokens went to: "7.3k↓ 562k+ 3.7M↻", what claude
-// wrote, what it read anew (input and cache writes), what it read again from the cache on every
-// call. A part of none goes; "" for none at all.
-func drawTurnTokens(u protocol.Usage) string {
-	var parts []string
-	for _, p := range []struct {
-		n    int
-		mark string
-	}{{u.Output, "↓"}, {u.Input + u.CacheWrite, "+"}, {u.CacheRead, "↻"}} {
-		if p.n > 0 {
-			parts = append(parts, drawTokens(p.n)+p.mark)
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
-// drawTokens is a count of tokens in few cells: "950", "1.2k", "48k", "3.4M", "500M".
-func drawTokens(n int) string {
-	for _, u := range []struct {
-		size float64
-		unit string
-	}{{1e9, "B"}, {1e6, "M"}, {1e3, "k"}} {
-		if f := float64(n) / u.size; f >= 1 {
-			if f < 10 {
-				return strings.TrimSuffix(fmt.Sprintf("%.1f", f), ".0") + u.unit
-			}
-			return fmt.Sprintf("%.0f", f) + u.unit
-		}
-	}
-	return strconv.Itoa(n)
-}
 
 // drawContext is how full main's context is, in few cells: "ctx" grey, the percentage coloured
 // by drawFull.

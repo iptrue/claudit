@@ -149,7 +149,7 @@ func drawExport(chat []ChatEntry, project, when string) string {
 				b.WriteString(t + "\n\n")
 			}
 		case CommandEntry:
-			fmt.Fprintf(&b, "```\n%s\n```\n\n", strings.TrimSpace(drawClean(e.Text)))
+			fmt.Fprintf(&b, "```\n%s\n```\n\n", strings.TrimSpace(drawUnescaped(e.Text)))
 		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")
@@ -158,7 +158,7 @@ func drawExport(chat []ChatEntry, project, when string) string {
 // copyReply puts claude's last reply on the clipboard (OSC 52: the terminal must allow it).
 func (m *Model) copyReply() tea.Cmd {
 	for i := len(m.Chat) - 1; i >= 0; i-- {
-		if e := m.Chat[i]; e.Kind == AssistantEntry && strings.TrimSpace(e.Text) != "" {
+		if e := m.Chat[i]; e.Kind == AssistantEntry && !e.Bash && strings.TrimSpace(e.Text) != "" {
 			m.local("Copied claude's last reply")
 			return tea.SetClipboard(strings.TrimSpace(e.Text))
 		}

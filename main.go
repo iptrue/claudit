@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -31,7 +33,8 @@ func main() {
 }
 
 func run(args []string) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	// claude has no terminal of its own (see claude.start): a closed window reaches it through ctx.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGHUP)
 	defer cancel()
 
 	cwd, err := os.Getwd()
@@ -60,9 +63,9 @@ func run(args []string) error {
 
 	m := ui.New(sess.Send, cwd, replay)
 	if !replay {
-		m.StartModel, m.StartEffort = claude.Model(args, cwd), claude.Effort(args, cwd)
+		m.StartModel = claude.Model(args, cwd)
 	}
-	p := tea.NewProgram(m, tea.WithFilter(ui.Filter))
+	p := tea.NewProgram(m, tea.WithFilter(ui.Filter), tea.WithContext(ctx)) // a hangup ends the TUI too
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

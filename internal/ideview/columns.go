@@ -1,6 +1,7 @@
 package ideview
 
 import (
+	"image"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,12 +13,13 @@ import (
 	"github.com/pixelbender/claudit/internal/ide"
 )
 
-// The right column splits into the workplaces of the agents at work: at most maxColumns of them,
-// none narrower than minColumn cells. A workplace stays columnLinger after its agent last did
-// something on screen.
+// The right column splits into the workplaces of the agents at work: at most maxColumns to a row,
+// none narrower than minColumn cells; past that they go under one another, none lower than minRow.
+// A workplace stays columnLinger after its agent last did something on screen.
 const (
 	maxColumns   = 3
 	minColumn    = 32
+	minRow       = 10
 	columnLinger = 8 * time.Second
 )
 
@@ -35,13 +37,16 @@ func workPane(a *ide.Agent) ide.Pane {
 	return a.Focus
 }
 
-// columns lays out the right column, rw cells wide: the workplaces of the agents at work or busy
-// a moment ago, the camera's always among them, the most recently busy first up to the count
+// columns picks what the right column shows, rw×h cells: the workplaces of the agents at work or
+// busy a moment ago, the camera's always among them, the most recently busy first up to the count
 // that fits, in the order of the agents. A file several agents work in shows once, as the latest
-// of them sees it. With nothing else at work, the camera's agent alone.
-func columns(st *ide.State, cam *ide.Agent, o Options, rw int) []column {
+// of them sees it. With nothing else at work, or the camera pinned, the camera's agent alone.
+func columns(st *ide.State, cam *ide.Agent, o Options, rw, h int) []column {
 	if st.Viewed != "" { // nobody's view: no caret of its own, every agent's labelled
 		return []column{{agent: &ide.Agent{File: st.Viewed}, pane: ide.Editor}}
+	}
+	if st.Pinned {
+		return alone(st, cam, rw)
 	}
 	type cand struct {
 		col   column
@@ -77,7 +82,7 @@ func columns(st *ide.State, cam *ide.Agent, o Options, rw int) []column {
 		return alone(st, cam, rw)
 	}
 	slices.SortStableFunc(cands, func(a, b cand) int { return b.at.Compare(a.at) })
-	cands = cands[:min(len(cands), maxColumns, max(1, rw/minColumn))]
+	cands = cands[:min(len(cands), perRow(rw)*max(1, h/minRow))]
 	slices.SortFunc(cands, func(a, b cand) int { return a.order - b.order })
 	cols := make([]column, len(cands))
 	for i, c := range cands {
@@ -100,32 +105,46 @@ func alone(st *ide.State, a *ide.Agent, rw int) []column {
 	return []column{{agent: a, pane: ide.Editor}, {agent: a, pane: side}}
 }
 
-// columnWidths splits rw cells among n columns; the last takes what is left over.
-func columnWidths(rw, n int) []int {
-	ws := make([]int, n)
-	for i := range ws {
-		ws[i] = rw / n
+// perRow is how many workplaces a row of rw cells holds side by side.
+func perRow(rw int) int { return min(maxColumns, max(1, rw/minColumn)) }
+
+// tiles lays n workplaces out in rw×h cells, in reading order: in as few rows as hold them, as
+// even as can be, the rows as high as one another and the panes of a row as wide; the last of
+// each takes what is left over.
+func tiles(n, rw, h int) []image.Rectangle {
+	rows := (n + perRow(rw) - 1) / perRow(rw)
+	per := (n + rows - 1) / rows
+	var ts []image.Rectangle
+	for r, y := 0, 0; r < rows; r++ {
+		th := h / rows
+		if r == rows-1 {
+			th = h - y
+		}
+		k := min(per, n-r*per)
+		for i, x := 0, 0; i < k; i++ {
+			tw := rw / k
+			if i == k-1 {
+				tw = rw - x
+			}
+			ts = append(ts, image.Rect(x, y, x+tw, y+th))
+			x += tw
+		}
+		y += th
 	}
-	ws[n-1] += rw % n
-	return ws
+	return ts
 }
 
-// columnAt is the column at cell x of a view width cells wide, the cell it starts at and its
-// width; ok is false for none.
-func columnAt(st *ide.State, o Options, width, x int) (c column, cx, cw int, ok bool) {
+// columnAt is the workplace at cell (x, y) of a view width×height cells, and where it is in the
+// view; ok is false for none.
+func columnAt(st *ide.State, o Options, width, height, x, y int) (c column, r image.Rectangle, ok bool) {
 	ew := leftWidth(width)
-	if x < ew {
-		return column{}, 0, 0, false
-	}
-	cols := columns(st, camera(st), o, width-ew)
-	cx = ew
-	for i, w := range columnWidths(width-ew, len(cols)) {
-		if x < cx+w {
-			return cols[i], cx, w, true
+	cols := columns(st, camera(st), o, width-ew, height)
+	for i, r := range tiles(len(cols), width-ew, height) {
+		if r = r.Add(image.Pt(ew, 0)); image.Pt(x, y).In(r) {
+			return cols[i], r, true
 		}
-		cx += w
 	}
-	return column{}, 0, 0, false
+	return column{}, image.Rectangle{}, false
 }
 
 // workplace draws column c, w×h cells.

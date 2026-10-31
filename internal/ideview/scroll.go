@@ -2,6 +2,7 @@ package ideview
 
 import (
 	"maps"
+	"slices"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -43,8 +44,11 @@ func Wheel(st *ide.State, o Options, width, height, x, y, n int) (string, int) {
 		return "", 0
 	}
 	_, ih := inner(0, height)
-	c, _, cw, ok := columnAt(st, o, width, x)
-	iw, _ := inner(cw, height)
+	c, t, ok := columnAt(st, o, width, height, x, y)
+	iw := 0
+	if ok {
+		iw, ih = inner(t.Dx(), t.Dy())
+	}
 	switch {
 	case !ok && o.Panel == Files:
 		top := scrollTop(treeSel(st, camera(st)), len(st.Tree), ih)
@@ -81,18 +85,42 @@ func step(d, n, lo, hi int) int {
 
 // Prune forgets the scroll of the panes Render(st, o, width, …) does not draw, so that one coming
 // back follows its agent.
-func Prune(st *ide.State, o Options, width int) {
+func Prune(st *ide.State, o Options, width, height int) {
 	shown := map[string]bool{filesPane: o.Panel == Files}
-	for _, c := range columns(st, camera(st), o, width-leftWidth(width)) {
+	for _, c := range columns(st, camera(st), o, width-leftWidth(width), height) {
 		shown[paneKey(st, c)] = true
 	}
 	maps.DeleteFunc(o.Scroll, func(k string, _ int) bool { return !shown[k] })
 }
 
+// TermScroll is the scroll of agent's terminal in Render(st, o, width, height) that brings the
+// first line tool call call typed to the top of the pane: the pane's key and how far back; "" when
+// the pane is not on screen or holds no line of the call.
+func TermScroll(st *ide.State, o Options, width, height int, agent, call string) (string, int) {
+	ew := leftWidth(width)
+	cols := columns(st, camera(st), o, width-ew, height)
+	for i, r := range tiles(len(cols), width-ew, height) {
+		if c := cols[i]; c.pane == ide.Terminal && c.agent.Key == agent {
+			t := &c.agent.Term
+			at := slices.IndexFunc(t.Lines, func(l ide.TermLine) bool { return l.Call == call })
+			if at < 0 {
+				return "", 0
+			}
+			iw, ih := inner(r.Dx(), r.Dy())
+			tw := textWidth(iw)
+			return termKey(agent), max(0, termRows(t, tw)-ih-lineRows(t.Lines[:at], tw))
+		}
+	}
+	return "", 0
+}
+
 // termRows is how many rows terminal t takes iw cells wide, its live line included.
-func termRows(t *ide.Term, iw int) int {
-	pw, n := ansi.StringWidth(clip(termPrompt, iw, "")), 1
-	for _, l := range t.Lines {
+func termRows(t *ide.Term, iw int) int { return lineRows(t.Lines, iw) + 1 }
+
+// lineRows is how many rows the scrollback lines take iw cells wide.
+func lineRows(lines []ide.TermLine, iw int) int {
+	pw, n := ansi.StringWidth(clip(termPrompt, iw, "")), 0
+	for _, l := range lines {
 		first := iw
 		if l.Kind == ide.Command || l.Kind == ide.More {
 			first -= pw

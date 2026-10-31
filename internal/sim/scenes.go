@@ -66,28 +66,37 @@ func (s *Sim) file(input map[string]any) file {
 // noOutput is what claude says in place of a tool's empty result: the terminal shows nothing.
 var noOutput = regexp.MustCompile(`^\(\w+ completed with no output\)$`)
 
-// command types cmd into the agent's terminal, runs it and prints the tool output, then a blank
-// line before the next prompt; limit > 0 caps the printed lines.
-func (s *Sim) command(sc *scene, cmd string, limit int) {
+// command types cmd into the agent's terminal under note, what it does as a "# " line when there
+// is one, runs it and prints the tool output, then a blank line before the next prompt; limit > 0
+// caps the printed lines.
+func (s *Sim) command(sc *scene, cmd, note string, limit int) {
 	l := sc.l
 	t := &l.a.Term
 	keys := []rune(cmd)
 	sc.score = scoreShell
-	sc.add(0, func() { l.look(ide.Terminal) })
+	sc.add(0, func() {
+		l.look(ide.Terminal)
+		if note = oneLine(note); note != "" {
+			t.PrintLine(ide.TermLine{Kind: ide.Comment, Text: "# " + note, Call: sc.id})
+		}
+	})
 	part := ide.Command // the command's first line has the prompt, the lines after it none
+	langs, n := lineLangs(cmd), 0
 	sc.paced(len(keys), termLo, termHi, cmdCap, func(i, j int) {
+		sc.typed()
 		for _, r := range keys[i:j] {
 			if r == '\n' {
-				t.Print(part, t.Input)
-				t.Input, part = "", ide.More
+				t.PrintLine(ide.TermLine{Kind: part, Text: t.Input, Lang: langs[n], Call: sc.id})
+				n++
+				t.Input, t.InputLang, part = "", langs[n], ide.More
 			} else {
 				t.Input += printable(string(r))
 			}
 		}
 	})
 	sc.add(enterPause, func() {
-		t.Print(part, t.Input)
-		t.Input, t.Running, t.Spinner, t.RunAt = "", true, 0, l.clock
+		t.PrintLine(ide.TermLine{Kind: part, Text: t.Input, Lang: langs[n], Call: sc.id})
+		t.Input, t.InputLang, t.Running, t.Spinner, t.RunAt = "", "", true, 0, l.clock
 	})
 	sc.score = scoreLook
 	sc.await(func(r result) {
@@ -126,7 +135,7 @@ func (s *Sim) browse(sc *scene, address string, search bool) {
 		l.look(ide.Browser)
 		*p = ide.Page{Search: search}
 	})
-	sc.paced(len(keys), termLo, termHi, cmdCap, func(i, j int) { p.URL += printable(string(keys[i:j])) })
+	sc.paced(len(keys), termLo, termHi, cmdCap, func(i, j int) { sc.typed(); p.URL += printable(string(keys[i:j])) })
 	sc.add(enterPause, func() { p.LoadAt = l.clock })
 	sc.score = scoreLook
 	sc.await(func(r result) {
@@ -271,6 +280,7 @@ func (s *Sim) retype(sc *scene, path, old, repl string, at int, all bool) {
 	})
 	sel := []rune(old)
 	sc.paced(len(sel), selLo, selHi, selCap, func(_, j int) {
+		sc.typed()
 		c := sc.caret()
 		start := c.Pos
 		if c.Sel != nil {
@@ -285,6 +295,7 @@ func (s *Sim) retype(sc *scene, path, old, repl string, at int, all bool) {
 		c.Sel = &ide.Selection{From: start, To: c.Pos}
 	})
 	sc.add(pause, func() {
+		sc.typed()
 		c := sc.caret()
 		if c.Sel != nil && sc.holds(c.Sel.From, old) {
 			sc.buf.Delete(sc.key(), c.Sel.From, advance(c.Sel.From, old))
@@ -319,6 +330,7 @@ func (s *Sim) write(sc *scene, f file, content string) {
 		n := len(strings.Split(strings.TrimSuffix(old, "\n"), "\n"))
 		sc.add(click, func() { sc.caret().Pos, sc.caret().Sel = ide.Pos{}, nil })
 		sc.paced(n, lineLo, lineHi, selCap, func(_, j int) {
+			sc.typed()
 			c := sc.caret()
 			c.Pos = sc.buf.Clamp(ide.Pos{Line: j})
 			if j == n {
@@ -326,7 +338,7 @@ func (s *Sim) write(sc *scene, f file, content string) {
 			}
 			c.Sel = &ide.Selection{To: c.Pos}
 		})
-		sc.add(pause, func() { sc.buf.Delete(sc.key(), ide.Pos{}, sc.buf.End()) })
+		sc.add(pause, func() { sc.typed(); sc.buf.Delete(sc.key(), ide.Pos{}, sc.buf.End()) })
 	}
 	sc.add(0, func() {
 		sc.caret().Pos = ide.Pos{}
@@ -378,6 +390,7 @@ func (s *Sim) open(sc *scene, path, text string) {
 func (s *Sim) enter(sc *scene, path, text string) *ide.Tab {
 	a := sc.l.a
 	t := s.st.Open(path, text)
+	t.Hex = false // an agent works on text
 	if a.File != path {
 		if o := s.st.FindTab(a.File); o != nil {
 			delete(o.Buf.Carets, a.Key)
@@ -443,27 +456,19 @@ func (sc *scene) travel(a, b ide.Pos) {
 func (sc *scene) typeText(text string) {
 	keys := []rune(text)
 	sc.paced(len(keys), codeLo, codeHi, codeCap, func(i, j int) {
+		sc.typed()
 		from := sc.buf.Caret(sc.key()).Pos.Line
 		sc.buf.Insert(sc.key(), string(keys[i:j]))
 		sc.buf.Light(sc.key(), from, sc.buf.Carets[sc.key()].Pos.Line, sc.l.clock)
 	})
 }
 
-// look turns the agent to pane. Moving between the terminal, the browser and the rest changes
-// what the view shows: it notes when, so the view can play the cut.
-func (l *lane) look(p ide.Pane) {
-	if place(l.a.Focus) != place(p) {
-		l.a.FocusAt = l.clock
-	}
-	l.a.Focus = p
-}
+// typed notes that the scene's agent types, selects or deletes text now.
+func (sc *scene) typed() { sc.l.a.TypedAt = sc.l.clock }
 
-// place is where the view shows pane p: the explorer goes with the editor.
-func place(p ide.Pane) ide.Pane {
-	if p == ide.Explorer {
-		return ide.Editor
-	}
-	return p
+// look turns the agent to pane.
+func (l *lane) look(p ide.Pane) {
+	l.a.Focus = p
 }
 
 // holds reports whether the scene's buffer has s at p.

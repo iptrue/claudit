@@ -64,6 +64,10 @@ type ModeChanged struct{ Mode string }
 // ModelChanged: after a SetModel, the session runs Model ("claude-haiku-5-5").
 type ModelChanged struct{ Model string }
 
+// Settings answers GetSettings: Effort is the level the next message runs at, as claude picks it
+// from the env, the flags, the settings of the model and the caps; "" for a model without efforts.
+type Settings struct{ Effort string }
+
 // ControlError: the CLI refused a control request of ours, e.g. a SetMode to a mode it cannot enter.
 type ControlError struct{ RequestID, Message string }
 
@@ -222,6 +226,7 @@ type Exited struct{ Err error }
 func (Init) isEvent()              {}
 func (ModeChanged) isEvent()       {}
 func (ModelChanged) isEvent()      {}
+func (Settings) isEvent()          {}
 func (ControlError) isEvent()      {}
 func (APIRetry) isEvent()          {}
 func (ModelFallback) isEvent()     {}
@@ -277,6 +282,9 @@ type Deny struct {
 // turn); Commands answers it.
 type Initialize struct{ RequestID string }
 
+// GetSettings asks the CLI what the session runs with; Settings answers it.
+type GetSettings struct{ RequestID string }
+
 // Interrupt stops the turn in progress: the running tools are cancelled and a Result (an error)
 // ends the turn.
 type Interrupt struct{ RequestID string }
@@ -317,6 +325,7 @@ func (Deny) isOutbound()         {}
 func (SetMode) isOutbound()      {}
 func (SetModel) isOutbound()     {}
 func (Initialize) isOutbound()   {}
+func (GetSettings) isOutbound()  {}
 func (Interrupt) isOutbound()    {}
 func (SideQuestion) isOutbound() {}
 func (Resume) isOutbound()       {}
@@ -666,8 +675,8 @@ func resultText(raw json.RawMessage) string {
 }
 
 // parseControlResponse picks the slash commands out of the answer to Initialize, the model out of
-// the one to SetModel and the answer out of the one to SideQuestion; the answers to other requests
-// say nothing the UI needs.
+// the one to SetModel, the effort out of the one to GetSettings and the answer out of the one to
+// SideQuestion; the answers to other requests say nothing the UI needs.
 func parseControlResponse(line []byte) []Event {
 	var m struct {
 		Response struct {
@@ -697,6 +706,10 @@ func parseControlResponse(line []byte) []Event {
 				Mode   string          `json:"current_permission_mode"`
 				Model  string          `json:"model"`    // the answer to a SetModel
 				Answer json.RawMessage `json:"response"` // the answer to a SideQuestion: a string
+
+				Applied *struct { // the answer to a GetSettings
+					Effort string `json:"effort"` // null for a model without efforts
+				} `json:"applied"`
 			} `json:"response"`
 		} `json:"response"`
 	}
@@ -708,6 +721,9 @@ func parseControlResponse(line []byte) []Event {
 	}
 	if md := m.Response.Response.Model; m.Response.Subtype == "success" && md != "" {
 		return []Event{ModelChanged{Model: md}}
+	}
+	if a := m.Response.Response.Applied; m.Response.Subtype == "success" && a != nil {
+		return []Event{Settings{Effort: a.Effort}}
 	}
 	var answer string
 	if json.Unmarshal(m.Response.Response.Answer, &answer) == nil && m.Response.Subtype == "success" {
@@ -871,6 +887,12 @@ func Encode(o Outbound) ([]byte, error) {
 			"type":       "control_request",
 			"request_id": o.RequestID,
 			"request":    map[string]any{"subtype": "initialize"},
+		})
+	case GetSettings:
+		return json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": o.RequestID,
+			"request":    map[string]any{"subtype": "get_settings"},
 		})
 	case Interrupt:
 		return json.Marshal(map[string]any{

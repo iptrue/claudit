@@ -3,7 +3,6 @@ package ideview
 import (
 	"fmt"
 	"image/color"
-	"math"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,32 +14,6 @@ import (
 	"github.com/pixelbender/claudit/internal/ide"
 	"github.com/pixelbender/claudit/internal/theme"
 )
-
-// cutTime is how long the right column takes to wipe in after the camera cuts to another agent or
-// its agent turns between the editor and the terminal.
-const cutTime = 220 * time.Millisecond
-
-// wipe reveals lines top-down behind a scanline in colour c, as a CRT refreshing, cutTime after at.
-func wipe(lines []string, at, now time.Time, c color.Color, w int) []string {
-	age := now.Sub(at)
-	if at.IsZero() || age < 0 || age >= cutTime {
-		return lines
-	}
-	t := float64(age) / float64(cutTime)
-	k := int(easeOut(t) * float64(len(lines)))
-	out := make([]string, len(lines))
-	copy(out, lines[:k])
-	for i := k; i < len(lines); i++ {
-		if i == k {
-			out[i] = lipgloss.NewStyle().Foreground(c).Render(strings.Repeat("━", w))
-		} else {
-			out[i] = strings.Repeat(" ", w)
-		}
-	}
-	return out
-}
-
-func easeOut(t float64) float64 { return 1 - math.Pow(1-t, 3) }
 
 // glowLife is how long a typed line flashes, and how long its light takes to fade once its agent
 // moves on (ide keeps faded glows as long).
@@ -64,12 +37,6 @@ func glow(g ide.Glow, now time.Time) color.Color {
 		return nil
 	}
 	return theme.Mix(theme.Bg, theme.Green, f)
-}
-
-// Cutting reports whether the right column is wiping in at now.
-func Cutting(st *ide.State, now time.Time) bool {
-	at := cutAt(st, camera(st))
-	return !at.IsZero() && now.Sub(at) >= 0 && now.Sub(at) < cutTime
 }
 
 // logo is the splash of an empty editor: a cat at a laptop, in pixels, two to a cell (30×10
@@ -199,11 +166,11 @@ func codeLine(st *ide.State, text string, l *ide.TermLine) string {
 func hitLine(st *ide.State, text string, first bool, l *ide.TermLine) string {
 	var at string
 	if first {
-		rs := []rune(text)
-		n := min(l.Prefix, len(rs))
+		rs, src := []rune(text), []rune(l.Text) // Prefix counts the runes of the line, text those drawn
+		n := min(utf8.RuneCountInString(drawn(string(src[:min(l.Prefix, len(src))]))), len(rs))
 		at, text = string(rs[:n]), string(rs[n:])
-		if name, ok := strings.CutPrefix(at, l.Lang); ok && l.Lang != "" {
-			at = lipgloss.NewStyle().Foreground(fileTint(l.Lang)).Render(l.Lang) + dimStyle.Render(name)
+		if path := drawn(l.Lang); path != "" && strings.HasPrefix(at, path) {
+			at = lipgloss.NewStyle().Foreground(fileTint(l.Lang)).Render(path) + dimStyle.Render(at[len(path):])
 		} else {
 			at = dimStyle.Render(at)
 		}
@@ -256,6 +223,15 @@ func working(a *ide.Agent, o Options) bool {
 		return o.Busy
 	}
 	return a.Status == ide.Running
+}
+
+// typeHold is how long a caret stays a block after its agent typed, selected or deleted text:
+// longer than an edit's pauses, so that it does not spin in between.
+const typeHold = 500 * time.Millisecond
+
+// typing reports whether a types, selects or deletes text by now: its caret is a solid block.
+func typing(a *ide.Agent, o Options) bool {
+	return !a.TypedAt.IsZero() && o.Now.Sub(a.TypedAt) < typeHold
 }
 
 // spinFrame is the spinner frame for now, turning every 80 ms.

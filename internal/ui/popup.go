@@ -138,15 +138,15 @@ func drawOptions(q *Question, w int, compact bool) (lines []string, owners []int
 		add(other, prefix+styleAccent.Render(label)+drawField(&q.Other, avail))
 		return lines, owners
 	}
-	text := ansi.Truncate(string(drawInputRunes(q.Other.Text)), avail, "…")
+	disp, _ := drawInputRunes(q.Other.Text, 0)
+	text := ansi.Truncate(string(disp), avail, "…")
 	add(other, prefix+styleFg.Render(label+text))
 	return lines, owners
 }
 
 // drawField draws an editable text field of at most avail cells with a reverse-video block cursor.
 func drawField(in *Input, avail int) string {
-	disp := drawInputRunes(in.Text)
-	cur := min(max(in.Cursor, 0), len(disp))
+	disp, cur := drawInputRunes(in.Text, in.Cursor)
 	start := drawScroll(disp, cur, avail)
 	at, rest := " ", ""
 	if cur < len(disp) {

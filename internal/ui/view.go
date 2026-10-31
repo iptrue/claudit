@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,9 +32,10 @@ var (
 
 // Key hints for the status line, by what has the keys; the first ones go when space runs out.
 var (
-	drawHintsPrompt  = []string{"shift+tab mode", "tab agents", "/ commands", "F1 help", "esc x2 quit"}
-	drawHintsBusy    = []string{"shift+tab mode", "tab agents", "F1 help", "esc interrupt"}
-	drawHintsQueued  = []string{"shift+tab mode", "tab agents", "F1 help", "↑ edit queued", "esc interrupt"}
+	drawHintsPrompt  = []string{"shift+tab mode", "/ commands", "F1 help", "esc x2 quit"}
+	drawHintsBusy    = []string{"shift+tab mode", "F1 help", "esc interrupt"}
+	drawHintsQueued  = []string{"shift+tab mode", "F1 help", "↑ edit queued", "esc interrupt"}
+	drawHintTab      = "tab agents" // after the mode's, while the agents panel is there to go to
 	drawHintsSuggest = []string{"↑/↓ pick", "tab complete", "enter run", "esc clear"}
 	drawHintsHelp    = []string{"esc close"}
 	drawHintsPanel   = []string{"↑/↓ select", "enter pin", "alt+0 auto", "tab back"}
@@ -63,12 +65,15 @@ func (m *Model) View() tea.View {
 	case m.canInterrupt():
 		hints = drawHintsBusy
 	}
+	if m.Panel == ideview.Agents {
+		hints = slices.Insert(slices.Clone(hints), 1, drawHintTab)
+	}
+	o := ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel, Now: m.Now, Busy: m.Status.Busy, Wrap: m.Wrap, Scroll: m.scroll}
 	switch {
 	case ideH == 0: // too low for the IDE: the conversation alone
 		clear(m.scroll)
 	default:
-		o := ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel, Now: m.Now, Busy: m.Status.Busy, Wrap: m.Wrap, Scroll: m.scroll}
-		ideview.Prune(st, o, w)
+		ideview.Prune(st, o, w, ideH)
 		top = ideview.Render(st, o, w, ideH)
 		m.zones = append(m.zones, zone{w: w, h: ideH,
 			click: func(x, y int) tea.Cmd {
@@ -93,10 +98,18 @@ func (m *Model) View() tea.View {
 	case len(m.Suggest) > 0:
 		hints = drawHintsSuggest
 	}
-	chat, chatMax := renderChat(&m.chatLines, entries, w, chatH, m.ChatScroll)
+	chat, chatMax, shown := renderChat(&m.chatLines, entries, w, chatH, m.ChatScroll)
 	m.chatMax = chatMax
 	if tw, _ := drawChatWidths(w); chatH > 0 { // the text past the "›", short of the times
-		m.zones = append(m.zones, zone{y: ideH, w: w, h: chatH, text: func(int, int) image.Rectangle { return image.Rect(4, 0, 2+tw, chatH) }})
+		m.zones = append(m.zones, zone{y: ideH, w: w, h: chatH,
+			click: func(_, y int) tea.Cmd {
+				call := "" // a Bash line's: a click shows where it ran
+				if i := shown[y]; i >= 0 {
+					call = entries[i].Call
+				}
+				return m.clickChat(call, o, w, ideH)
+			},
+			text: func(int, int) image.Rectangle { return image.Rect(4, 0, 2+tw, chatH) }})
 	}
 	in, cx := renderInput(&m.Input, w-4, "Ask claude…", m.PanelFocus)
 	var parts []string
@@ -106,6 +119,7 @@ func (m *Model) View() tea.View {
 	if chatH > 0 {
 		parts = append(parts, chat)
 	}
+	m.Status.Noted = m.sel.noted(m.Now)
 	parts = append(parts, strings.Join(drawBox([]string{in}, w-4, theme.Border), "\n"), renderStatus(m.Status, hints, w))
 	base := strings.Join(parts, "\n")
 
@@ -134,16 +148,16 @@ func (m *Model) View() tea.View {
 	case !m.PanelFocus: // the keys go to the agents panel: no caret in the prompt
 		v.Cursor = tea.NewCursor(2+cx, ideH+chatH+1)
 	}
-	selecting := m.sel.drag && m.Popup == nil && !m.ShowHelp
+	selecting := m.sel.drag && m.sel.out(m.Now) < 1 && m.Popup == nil && !m.ShowHelp
 	if len(under) == 1 && over == nil && !selecting {
 		v.SetContent(drawBlock(base, w, h))
 		return v
 	}
 	c := lipgloss.NewCanvas(w, h).Compose(lipgloss.NewCompositor(under...))
 	if selecting {
-		m.sel.text = drawSelection(c, m.sel)
+		m.sel.text = drawSelection(c, m.sel, m.sel.lit(m.Now), m.sel.out(m.Now))
 	}
-	if m.Popup != nil {
+	if m.Popup != nil || m.ShowHelp {
 		drawDim(c)
 	}
 	if over != nil {
@@ -154,11 +168,11 @@ func (m *Model) View() tea.View {
 	return v
 }
 
-// drawDimBy is how far the screen behind a popup fades toward the background.
+// drawDimBy is how far the screen behind a popup or the help fades toward the background.
 const drawDimBy = 0.6
 
-// drawDim fades what c shows toward the background, so that a popup stands out and the rest
-// looks out of reach.
+// drawDim fades what c shows toward the background, so that a popup or the help stands out and
+// the rest looks out of reach.
 func drawDim(c *lipgloss.Canvas) {
 	for y := range c.Height() {
 		for x := range c.Width() {
@@ -174,9 +188,10 @@ func drawDim(c *lipgloss.Canvas) {
 	}
 }
 
-// drawSelection lights the cells of c that s covers, from where the drag began to where it is in
-// reading order within its box, and returns their text: a line per row, without trailing blanks.
-func drawSelection(c *lipgloss.Canvas, s selection) string {
+// drawSelection lights the cells of c that s covers in lit, from where the drag began to where it
+// is in reading order within its box, out of 1 gone out, and returns their text: a line per row,
+// without trailing blanks. A row is lit as far as its text goes: its blanks after it stay dark.
+func drawSelection(c *lipgloss.Canvas, s selection, lit color.Color, out float64) string {
 	from, to := s.from, s.to
 	if to.Y < from.Y || to.Y == from.Y && to.X < from.X {
 		from, to = to, from
@@ -190,13 +205,23 @@ func drawSelection(c *lipgloss.Canvas, s selection) string {
 		if y == to.Y {
 			x1 = to.X + 1
 		}
-		var b strings.Builder
+		end := x0 // past the row's last character
 		for x := x0; x < x1; x++ {
+			if cell := c.CellAt(x, y); cell != nil && strings.TrimSpace(cell.Content) != "" {
+				end = x + max(cell.Width, 1)
+			}
+		}
+		var b strings.Builder
+		for x := x0; x < end; x++ {
 			cell := c.CellAt(x, y)
 			if cell == nil {
 				continue
 			}
-			cell.Style.Bg = theme.SelBg
+			bg := cell.Style.Bg
+			if bg == nil {
+				bg = theme.Bg
+			}
+			cell.Style.Bg = theme.Mix(lit, bg, out)
 			if cell.Width > 0 { // not the second half of a wide character
 				b.WriteString(cell.Content)
 			}
@@ -230,7 +255,7 @@ func drawTitle(st Status, asking bool) (string, *tea.ProgressBar) {
 
 // drawNotice posts text as a desktop notification (OSC 9: iTerm2, WezTerm, Ghostty), without a bell.
 func drawNotice(text string) string {
-	return "\x1b]9;" + ansi.Truncate(drawOneLine(text), 160, "…") + "\x07"
+	return "\x1b]9;" + ansi.Truncate(strings.ReplaceAll(drawUnescaped(text), "\n", " "), 160, "…") + "\x07"
 }
 
 // drawLayout splits the height: the IDE on top, then the chat, as tall as its chat lines up to
@@ -307,8 +332,9 @@ func drawBox(lines []string, inner int, c color.Color) []string {
 // drawAgentColor is the colour of an agent's palette slot.
 func drawAgentColor(slot int) color.Color { return theme.Agents[max(0, slot)%len(theme.Agents)] }
 
-// drawClean makes foreign text safe to lay out: no escape sequences, tabs as 4 spaces, no control characters but '\n'.
-func drawClean(s string) string {
+// drawUnescaped makes foreign text plain, for what is not laid out in cells (a notification, an export):
+// no escape sequences, tabs as 4 spaces, no control characters but '\n'.
+func drawUnescaped(s string) string {
 	s = strings.ReplaceAll(ansi.Strip(s), "\t", "    ")
 	return strings.Map(func(r rune) rune {
 		if r != '\n' && unicode.IsControl(r) {
@@ -316,6 +342,16 @@ func drawClean(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// drawClean makes foreign text safe to lay out: drawUnescaped without ideview.Undrawn runes.
+func drawClean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if ideview.Undrawn(r) {
+			return -1
+		}
+		return r
+	}, drawUnescaped(s))
 }
 
 // drawOneLine is drawClean with line breaks turned into spaces.

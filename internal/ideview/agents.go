@@ -106,33 +106,25 @@ func agentsView(st *ide.State, cam *ide.Agent, o Options, ih int) ([]treeRow, in
 func agentsPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	iw, ih := inner(w, h)
 	tree, top := agentsView(st, cam, o, ih)
-	var main string // main's model, which the other agents' are told against
-	if len(st.Agents) > 0 {
-		main = st.Agents[0].Model
-	}
 	rows := make([]string, ih)
 	for i := range rows {
 		if top+i >= len(tree) {
 			break
 		}
-		rows[i] = " " + agentRow(tree[top+i], cam, main, o, textWidth(iw))
+		rows[i] = " " + agentRow(tree[top+i], o, textWidth(iw))
 	}
 	mode := "auto"
 	if st.Pinned {
 		mode = "pinned"
 	}
 	title := " " + fgStyle.Render("agents") + dimStyle.Render(" · "+mode) + " "
-	bc := theme.Border
-	if o.Focused {
-		bc = theme.BorderFocus
-	}
-	return frame(w, h, bc, title, rows)
+	return frame(w, h, theme.Border, title, rows)
 }
 
 // agentRow draws one line of the agents tree, w cells wide: the hotkey in a gutter, then the
-// indented status and name, the camera mark, and at the right edge the model when it is not
-// main's, and the duration. The tree tells the agent's kind; what it does shows in its workplace.
-func agentRow(r treeRow, cam *ide.Agent, main string, o Options, w int) string {
+// indented status and name, and at the right edge, grey, the model it runs on and the duration.
+// The tree tells the agent's kind; what it does shows in its workplace.
+func agentRow(r treeRow, o Options, w int) string {
 	indent := strings.Repeat(" ", 2*r.depth)
 	a := r.agent
 	if a == nil {
@@ -151,19 +143,15 @@ func agentRow(r treeRow, cam *ide.Agent, main string, o Options, w int) string {
 		hot = strconv.Itoa(a.Hotkey)
 	}
 	nameStyle := base.Foreground(agentColor(a))
-	var camMark string
-	if a == cam {
-		camMark = " ◉"
-	}
 	dur := duration(a, o.Now)
-	room := w - 4 - len(indent) - ansi.StringWidth(camMark) // the hotkey, the status and a space after each
+	room := w - 4 - len(indent) // the hotkey, the status and a space after each
 	if dur != "" {
 		room -= 1 + len(dur)
 	}
 	name := clip(a.Name, room, "…")
 	room -= ansi.StringWidth(name)
 	var model string
-	if f := family(a.Model); a.Kind != ide.Main && f != "" && f != family(main) && room > len(f) {
+	if f := family(a.Model); f != "" && room > len(f) {
 		model = " " + f
 		room -= len(model)
 	}
@@ -171,8 +159,7 @@ func agentRow(r treeRow, cam *ide.Agent, main string, o Options, w int) string {
 		dur = " " + dur
 	}
 	return base.Foreground(theme.Dim).Render(hot) + base.Render(" "+indent) + base.Foreground(gc).Render(glyph) + base.Render(" ") +
-		nameStyle.Render(name) + base.Foreground(agentColor(a)).Render(camMark) +
-		base.Foreground(theme.Dim).Render(strings.Repeat(" ", max(0, room))+model+dur)
+		nameStyle.Render(name) + base.Foreground(theme.Dim).Render(strings.Repeat(" ", max(0, room))+model+dur)
 }
 
 // family is the short name of a model: "haiku" for "claude-haiku-5-5", the id without "claude-"

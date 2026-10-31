@@ -86,7 +86,7 @@ head -c 1048576 /dev/zero | tr '\0' 'a'
 printf '"}]}}\n'
 echo "warning: fake" >&2
 n=0
-while [ $n -lt 4 ] && IFS= read -r line; do
+while [ $n -lt 5 ] && IFS= read -r line; do
 	printf '%s\n' "$line" >> "$FAKE_DIR/stdin"
 	n=$((n+1))
 done
@@ -170,7 +170,7 @@ func TestSpawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	var wantStdin []byte
-	for _, o := range append([]protocol.Outbound{protocol.Initialize{RequestID: "init"}}, sent...) {
+	for _, o := range append([]protocol.Outbound{protocol.Initialize{RequestID: "init"}, protocol.GetSettings{RequestID: "settings"}}, sent...) {
 		b, err := protocol.Encode(o)
 		if err != nil {
 			t.Fatal(err)
@@ -185,7 +185,7 @@ func TestSpawn(t *testing.T) {
 // main relies on this: once ctx is cancelled, Events closes only after claude is gone.
 func TestSpawnCancelKills(t *testing.T) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\necho $$ > \"$FAKE_DIR/pid\"\necho started >&2\nexec sleep 30\n"
+	script := "#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > \"$FAKE_DIR/child\"\necho $$ > \"$FAKE_DIR/pid\"\necho started >&2\nexec sleep 30\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +206,11 @@ func TestSpawnCancelKills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// claude leads a session of its own, so a group too: it has no controlling terminal to draw
+	// over the TUI.
+	if pgid, err := syscall.Getpgid(pid); err != nil || pgid != pid {
+		t.Errorf("getpgid(%d) = %d, %v; want a group of its own", pid, pgid, err)
+	}
 
 	cancel()
 	timeout := time.After(5 * time.Second)
@@ -218,6 +223,18 @@ func TestSpawnCancelKills(t *testing.T) {
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("claude (pid %d) still exists after Events closed: kill(0) = %v", pid, err)
+	}
+	// What claude runs goes with it, as when a closed terminal hangs up on them all.
+	data, err = os.ReadFile(filepath.Join(dir, "child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	for deadline := time.Now().Add(2 * time.Second); syscall.Kill(child, 0) == nil; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			syscall.Kill(child, syscall.SIGKILL)
+			t.Fatalf("claude's child (pid %d) outlives it", child)
+		}
 	}
 }
 
@@ -236,7 +253,7 @@ i=0
 while IFS= read -r line; do
 	printf '%s\n' "$line" >> "$FAKE_DIR/stdin$n"
 	i=$((i+1))
-	[ $n = 2 ] && [ $i = 2 ] && exit 4
+	[ $n = 2 ] && [ $i = 3 ] && exit 4
 done
 `
 
@@ -289,7 +306,7 @@ func TestSpawnResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	var want []byte
-	for _, o := range []protocol.Outbound{protocol.Initialize{RequestID: "init"}, protocol.UserMessage{Text: "two"}} {
+	for _, o := range []protocol.Outbound{protocol.Initialize{RequestID: "init"}, protocol.GetSettings{RequestID: "settings"}, protocol.UserMessage{Text: "two"}} {
 		b, _ := protocol.Encode(o)
 		want = append(append(want, b...), '\n')
 	}
@@ -349,34 +366,6 @@ func TestModel(t *testing.T) {
 		if got := Model(args, cwd); got != "sonnet[1m]" {
 			t.Errorf("Model(%q) = %q", args, got)
 		}
-	}
-}
-
-// The effort claude starts with is picked as claude does: $CLAUDE_CODE_EFFORT_LEVEL, then --effort,
-// then the effortLevel of the managed, local, project and user settings; "" when nothing names one.
-func TestEffort(t *testing.T) {
-	cwd, config := t.TempDir(), t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", config)
-	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
-	defer func(old string) { managedSettings = old }(managedSettings)
-	managedSettings = filepath.Join(t.TempDir(), "managed-settings.json")
-	if got := Effort(nil, cwd); got != "" {
-		t.Errorf("nothing names one: %q", got)
-	}
-	if err := os.WriteFile(filepath.Join(config, "settings.json"), []byte(`{"effortLevel":"medium"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := Effort(nil, cwd); got != "medium" {
-		t.Errorf("settings: %q", got)
-	}
-	for _, args := range [][]string{{"--effort", "high"}, {"-c", "--effort=high"}} {
-		if got := Effort(args, cwd); got != "high" {
-			t.Errorf("Effort(%q) = %q", args, got)
-		}
-	}
-	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
-	if got := Effort([]string{"--effort", "high"}, cwd); got != "low" {
-		t.Errorf("env: %q", got)
 	}
 }
 

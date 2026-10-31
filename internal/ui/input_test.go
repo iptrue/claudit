@@ -79,7 +79,7 @@ func TestInputEditing(t *testing.T) {
 		want   string
 		cursor int
 	}{
-		{"type latin", "hello", "", "hello", 5},
+		{"type ascii", "hello", "", "hello", 5},
 		{"type words", "hello world", "", "hello world", 11},
 		{"insert in the middle", "plnet", "left left left a", "planet", 3},
 		{"emoji", "a🙂b", "left backspace", "ab", 1},

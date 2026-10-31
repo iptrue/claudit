@@ -66,7 +66,38 @@ func classify(cmd string, lines []string, failed bool) []ide.TermLine {
 			out[i].Kind, out[i].Lang = ide.Code, file
 		}
 	}
+	markGit(cmd, out)
 	return out
+}
+
+var (
+	statusRow = regexp.MustCompile(`^(?:[MTADRCU?!][ MTADRCU?!m]| [MTADRCU?!m]) \S`) // "XY path" of git status --short; "m" a submodule's
+	statRow   = regexp.MustCompile(`^ \S.* \| +\d+ [+-]+$`)                          // " path | 7 ++++++-" of a diffstat
+)
+
+// markGit marks, among the plain lines, those of git status --short, for the terminal to colour
+// their status as git does, and those of a diffstat, for their "+" and "-". A short status is told
+// by the command, a diffstat by its look: git diff, show, log, pull and merge print one.
+func markGit(cmd string, out []ide.TermLine) {
+	short := slices.ContainsFunc(commands(cmd), func(p [][]string) bool { return slices.ContainsFunc(p, shortStatus) })
+	for i := range out {
+		switch l := &out[i]; {
+		case l.Kind != ide.Output:
+		case short && statusRow.MatchString(l.Text):
+			l.Kind = ide.Status
+		case statRow.MatchString(l.Text):
+			l.Kind = ide.Stat
+		}
+	}
+}
+
+// shortStatus reports whether words run git status in its short format: -s, --short, --porcelain.
+func shortStatus(words []string) bool {
+	prog, args := program(words)
+	return prog == "git status" && slices.ContainsFunc(args, func(a string) bool {
+		return a == "--short" || a == "--porcelain" || a == "--porcelain=v1" || a == "--porcelain=1" ||
+			len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsRune(a, 's') // -s, -sb
+	})
 }
 
 // markDiff marks the lines of a diff: changes by their sign, headers, hunks, and the lines around
@@ -151,39 +182,133 @@ func markHits(out []ide.TermLine, file string) {
 
 // source says where the output of cmd comes from: "view" for the text of file, "search" for the
 // hits of a search (in file, when it searches one); "" for anything else. Of a command line of
-// several commands the last decides, what prints last; of a pipeline, its last command, or the
-// one before when that only passes on what it reads.
+// several commands the last decides, what prints last; but when it searches to print no hits (a
+// count, names of files), the hits are those of the search before it.
 func source(cmd string) (what, file string) {
 	cmds := slices.DeleteFunc(commands(cmd), func(p [][]string) bool { return len(p) == 1 && len(p[0]) == 0 })
-	if len(cmds) > 0 {
-		pipeline := cmds[len(cmds)-1]
-		for i := len(pipeline) - 1; i >= 0; i-- {
-			prog, args := program(pipeline[i])
-			switch {
-			case searchers[prog]:
-				file = firstFile(prog, args)
-				for j := i - 1; j >= 0 && file == ""; j-- { // a search in what a viewer prints
-					if p, a := program(pipeline[j]); viewers[p] {
-						file = firstFile(p, a)
-					}
-				}
-				return "search", file
-			case prog == "git show":
-				for _, a := range args {
-					if _, path, ok := strings.Cut(a, ":"); ok && fileName(path) {
-						return "view", path
-					}
-				}
-			case viewers[prog]:
-				if f := firstFile(prog, args); f != "" {
-					return "view", f
-				}
-				continue // it reads its input: what comes before it decides
+	if len(cmds) == 0 {
+		return "", ""
+	}
+	what, file = pipelineSource(cmds[len(cmds)-1])
+	if what == "search" && hitless(cmds[len(cmds)-1]) {
+		for i := len(cmds) - 2; i >= 0; i-- {
+			if w, f := pipelineSource(cmds[i]); w == "search" && !hitless(cmds[i]) {
+				return w, f
 			}
-			break // the pipeline prints what this command makes: no text of a file, no search
 		}
 	}
+	return what, file
+}
+
+// hitless reports whether the last search of pipeline prints no hits: only their count, the names of
+// the files with or without them, or nothing.
+func hitless(pipeline [][]string) bool {
+	for i := len(pipeline) - 1; i >= 0; i-- {
+		if prog, args := program(pipeline[i]); searchers[prog] {
+			return slices.ContainsFunc(args, func(a string) bool {
+				switch a {
+				case "--count", "--files-with-matches", "--files-without-match", "--quiet", "--silent":
+					return true
+				}
+				return len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], "clLq") // -c, -lr
+			})
+		}
+	}
+	return false
+}
+
+// pipelineSource is source for one pipeline: its last command decides, or the one before when
+// that only passes on what it reads.
+func pipelineSource(pipeline [][]string) (what, file string) {
+	for i := len(pipeline) - 1; i >= 0; i-- {
+		prog, args := program(pipeline[i])
+		switch {
+		case searchers[prog]:
+			file = firstFile(prog, args)
+			for j := i - 1; j >= 0 && file == ""; j-- { // a search in what a viewer prints
+				file = shown(program(pipeline[j]))
+			}
+			return "search", file
+		case prog == "git show":
+			if f := shown(prog, args); f != "" {
+				return "view", f
+			}
+		case viewers[prog]:
+			if f := shown(prog, args); f != "" {
+				return "view", f
+			}
+			continue // it reads its input: what comes before it decides
+		}
+		break // the pipeline prints what this command makes: no text of a file, no search
+	}
 	return "", ""
+}
+
+// shown is the file prog prints the text of: a viewer's first file, or the path of git show's
+// "rev:path"; "" when it prints none.
+func shown(prog string, args []string) string {
+	if prog == "git show" {
+		for _, a := range args {
+			if _, path, ok := strings.Cut(a, ":"); ok && !strings.HasPrefix(a, "-") && fileName(path) { // not --format=%h:%s
+				return path
+			}
+		}
+		return ""
+	}
+	if viewers[prog] {
+		return firstFile(prog, args)
+	}
+	return ""
+}
+
+var (
+	hereDoc  = regexp.MustCompile(`<<-?\s*['"]?([A-Za-z_]\w*)['"]?`)           // <<EOF, <<-EOF, <<'EOF'
+	redirect = regexp.MustCompile(`(?:^|[^<>&0-9])>>?\s*['"]?([^\s'"&|;<>]+)`) // "> file", ">> file"
+)
+
+// interpreters are the programs that run a script read from their input, by the file name of its
+// language (python3.12 and the like by their prefix).
+var interpreters = map[string]string{
+	"node": ".js", "deno": ".js", "bun": ".js", "ruby": ".rb", "php": ".php", "lua": ".lua",
+	"sh": ".sh", "bash": ".sh", "zsh": ".sh", "psql": ".sql", "sqlite3": ".sql", "mysql": ".sql",
+}
+
+// lineLangs is the language of each line of cmd as a file name langOf knows: "" for the shell's;
+// for the body of a here-document, that of what it feeds: an interpreter's script, the file cat or
+// tee writes.
+func lineLangs(cmd string) []string {
+	lines := strings.Split(cmd, "\n")
+	langs := make([]string, len(lines))
+	for i := 0; i < len(lines); i++ {
+		m := hereDoc.FindStringSubmatchIndex(lines[i])
+		if m == nil {
+			continue
+		}
+		end, lang := lines[i][m[2]:m[3]], fed(lines[i], m[0])
+		for i++; i < len(lines) && strings.TrimSpace(lines[i]) != end; i++ {
+			langs[i] = lang
+		}
+	}
+	return langs
+}
+
+// fed is what the here-document that starts at byte at of line feeds, as a file name; "" for what
+// has no language.
+func fed(line string, at int) string {
+	cmds := commands(line[:at])
+	p := cmds[len(cmds)-1]
+	prog, args := program(p[len(p)-1])
+	switch {
+	case prog == "cat":
+		if m := redirect.FindStringSubmatch(line); m != nil {
+			return m[1]
+		}
+	case prog == "tee":
+		return firstFile(prog, args)
+	case strings.HasPrefix(prog, "python"):
+		return ".py"
+	}
+	return interpreters[prog]
 }
 
 // program is the program a command runs and its arguments, past variable assignments and

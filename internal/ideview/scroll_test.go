@@ -86,8 +86,50 @@ func TestWheel(t *testing.T) {
 	// What is not drawn forgets its scroll: the browser takes the terminal's place.
 	o.Scroll[src] = 3
 	st.Agents[0].Focus = ide.Browser
-	Prune(st, o, 100)
+	Prune(st, o, 100, 20)
 	if _, ok := o.Scroll[term]; ok || o.Scroll[src] != 3 || o.Scroll[filesPane] != 3 {
 		t.Errorf("pruned: %v", o.Scroll)
+	}
+}
+
+// A Bash call's lines come to the top of its agent's terminal however far back they are; at its
+// end, the terminal follows its agent. A call the terminal holds no line of, or a terminal not on
+// screen, scrolls nothing.
+func TestTermScroll(t *testing.T) {
+	st := sampleState()
+	st.Pinned = true // main alone: its file beside its terminal
+	main := st.Agents[0]
+	main.Term.Lines = nil
+	out := func(what string) {
+		for i := range 30 {
+			main.Term.Lines = append(main.Term.Lines, ide.TermLine{Kind: ide.Output, Text: fmt.Sprintf("%s %02d", what, i)})
+		}
+	}
+	out("before")
+	main.Term.Lines = append(main.Term.Lines,
+		ide.TermLine{Kind: ide.Comment, Text: "# Run the tests", Call: "b1"},
+		ide.TermLine{Kind: ide.Command, Text: "go test ./...", Call: "b1"})
+	out("after")
+	main.Term.Lines = append(main.Term.Lines, ide.TermLine{Kind: ide.Command, Text: "pwd", Call: "b2"})
+
+	o := Options{Scroll: Scroll{}}
+	key, back := TermScroll(st, o, 100, 20, "main", "b1")
+	if key != termKey("main") || back <= 0 {
+		t.Fatalf("b1: %q %d", key, back)
+	}
+	o.Scroll[key] = back
+	if rows := scrollRows(st, o); !strings.Contains(rows[1], "# Run the tests") || !strings.Contains(rows[2], "go test") ||
+		strings.Contains(strings.Join(rows, "\n"), "before 29") {
+		t.Errorf("scrolled to b1:\n%s", strings.Join(rows, "\n"))
+	}
+	if key, back := TermScroll(st, o, 100, 20, "main", "b2"); key != termKey("main") || back != 0 {
+		t.Errorf("b2, the last: %q %d", key, back)
+	}
+	if key, back := TermScroll(st, o, 100, 20, "main", "b3"); key != "" || back != 0 {
+		t.Errorf("a call it holds no line of: %q %d", key, back)
+	}
+	main.Focus = ide.Browser // its file beside its browser: no terminal on screen
+	if key, back := TermScroll(st, o, 100, 20, "main", "b1"); key != "" || back != 0 {
+		t.Errorf("no terminal on screen: %q %d", key, back)
 	}
 }

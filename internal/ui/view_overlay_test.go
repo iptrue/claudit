@@ -50,7 +50,7 @@ func TestViewHelp(t *testing.T) {
 			}
 		}
 	}
-	if out := ansi.Strip(renderHelp(100, 40)); !strings.Contains(out, "claudit") || !strings.Contains(out, "◉ camera") {
+	if out := ansi.Strip(renderHelp(100, 40)); !strings.Contains(out, "claudit") || strings.Contains(out, "workflow") {
 		t.Errorf("help:\n%s", out)
 	}
 	// A long description goes on under itself, never cut; cut short, the help still says how to close it.
@@ -135,7 +135,7 @@ func TestViewTypedPrefix(t *testing.T) {
 		{"kill", "K", "k", "ill"}, // the Kelvin sign is 3 bytes, k is 1
 		{"ab", "abc", "", "ab"},
 		{"ab", "ab", "ab", ""},
-		{"日本語", "日", "日", "本語"},
+		{"世界", "世", "世", "界"},
 	}
 	for _, c := range cases {
 		if head, rest := drawTypedPrefix(c.name, c.typed); head != c.head || rest != c.rest {
@@ -153,5 +153,12 @@ func TestViewHintsCompletion(t *testing.T) {
 	m.Suggest = []protocol.Command{{Name: "clear"}}
 	if status := drawPlainLines(m.View().Content)[29]; !strings.HasSuffix(status, "esc clear") {
 		t.Errorf("completion hints: %q", status)
+	}
+}
+
+// What leaves the screen keeps its text whole: a notification has no cells to agree on.
+func TestDrawNoticeKeepsText(t *testing.T) {
+	if got := drawNotice("done ❤️ 👨‍👩‍👧\n\x1b[1mok\x1b[0m"); got != "\x1b]9;done ❤️ 👨‍👩‍👧 ok\x07" {
+		t.Errorf("notice %q", got)
 	}
 }

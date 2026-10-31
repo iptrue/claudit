@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -79,6 +80,36 @@ func modelCall(id, name string) string {
 
 func modelReturn(id string) string {
 	return `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"ok"}]}}` + "\n"
+}
+
+// What main's Bash call says it does goes to the chat as claude's words; a subagent's does not, nor
+// a call that says nothing.
+func TestModelBashDescription(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelEvents(m,
+		protocol.TextStart{}, protocol.TextDelta{Text: "Let me check."},
+		protocol.ToolUse{ID: "b1", Name: "Bash", Input: map[string]any{"command": "go test ./...", "description": "Run the tests"}},
+		protocol.ToolUse{ID: "b2", Name: "Bash", Input: map[string]any{"command": "pwd"}},
+		protocol.ToolUse{ID: "s1", Name: "Agent", Input: map[string]any{"description": "alpha"}},
+		protocol.ToolUse{ID: "b3", Name: "Bash", Parent: "s1", Input: map[string]any{"command": "ls", "description": "List the files"}},
+	)
+	var said []string
+	for _, e := range m.Chat {
+		if e.Kind == AssistantEntry {
+			said = append(said, e.Text)
+		}
+	}
+	if want := []string{"Let me check.", "Run the tests"}; !slices.Equal(said, want) {
+		t.Errorf("claude said %q, want %q", said, want)
+	}
+	// It is no reply: /copy takes the one before it, and what streams next goes on its own.
+	if cmd := m.copyReply(); cmd == nil || fmt.Sprint(cmd()) != "Let me check." {
+		t.Errorf("/copy copies %v", cmd)
+	}
+	modelEvents(m, protocol.TextDelta{Text: "Done."})
+	if e := m.Chat[len(m.Chat)-1]; e.Text != "Done." || e.Bash {
+		t.Errorf("text after it: %+v", e)
+	}
 }
 
 func TestModelSubagent(t *testing.T) {

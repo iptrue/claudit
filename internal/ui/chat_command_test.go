@@ -10,8 +10,8 @@ import (
 // Replies as `claude -p` sends them (trimmed).
 const (
 	drawUsageReply = "You are currently using your subscription to power your Claude Code usage\n\n" +
-		"Current session: 1% used · resets Oct 30 at 12:39pm (Europe/Moscow)\n" +
-		"Current week (all models): 64% used · resets Nov 3 at 1:59am (Europe/Moscow)\n\n" +
+		"Current session: 1% used · resets Oct 30 at 12:39pm (Etc/UTC)\n" +
+		"Current week (all models): 64% used · resets Nov 3 at 1:59am (Etc/UTC)\n\n" +
 		"What's contributing to your usage?\nApproximate · sessions on this machine only · shares overlap\n\n" +
 		"Last 24h · 1593 requests · 15 sessions\n  69%  Start fresh when you switch tasks · run /clear\n  Top skills: /init 2%"
 	drawContextReply = "## Context Usage\n\n**Model:** claude-haiku-5-5  \n**Tokens:** 15.8k / 1m (2%)\n\n" +
@@ -39,11 +39,11 @@ func TestChatCommandUsage(t *testing.T) {
 		"",
 		"Current session",
 		"▌" + strings.Repeat("░", 49) + " 1% used",
-		"Resets Oct 30 at 12:39pm (Europe/Moscow)",
+		"Resets Oct 30 at 12:39pm (Etc/UTC)",
 		"",
 		"Current week (all models)",
 		strings.Repeat("█", 32) + strings.Repeat("░", 18) + " 64% used",
-		"Resets Nov 3 at 1:59am (Europe/Moscow)",
+		"Resets Nov 3 at 1:59am (Etc/UTC)",
 		"",
 		"What's contributing to your usage?",
 		"Approximate · sessions on this machine only · shares overlap",
@@ -125,7 +125,7 @@ func TestChatCommandError(t *testing.T) {
 // The output follows the command behind a "›" as a reply does, and fits any width.
 func TestChatCommandEntry(t *testing.T) {
 	entries := []ChatEntry{{Kind: UserEntry, Text: "/usage"}, {Kind: CommandEntry, Text: drawUsageReply}}
-	out, _ := renderChat(new(chatCache), entries, 90, 40, 0)
+	out, _, _ := renderChat(new(chatCache), entries, 90, 40, 0)
 	lines := drawPlainLines(out)
 	text := strings.Join(lines, "\n")
 	if !strings.Contains(text, "  › /usage\n  › You are currently using") || !strings.Contains(text, "\n    Current session\n") {
@@ -137,7 +137,7 @@ func TestChatCommandEntry(t *testing.T) {
 	}
 	for _, w := range []int{1, 2, 5, 9, 13, 20, 40, 80, 133} {
 		for _, h := range []int{1, 7, 80} {
-			out, _ := renderChat(new(chatCache), all, w, h, 0)
+			out, _, _ := renderChat(new(chatCache), all, w, h, 0)
 			drawCheckSize(t, out, w, h)
 		}
 	}

@@ -2,6 +2,7 @@ package sim
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 // classified is what classify makes of output, one "kind lang prefix|text" per line for short diffs.
 func classified(cmd, output string, failed bool) []string {
 	names := map[ide.LineKind]string{ide.Output: "out", ide.ErrorOutput: "err", ide.Code: "code", ide.Match: "hit",
-		ide.Added: "add", ide.Removed: "del", ide.Hunk: "hunk", ide.Meta: "meta"}
+		ide.Added: "add", ide.Removed: "del", ide.Hunk: "hunk", ide.Meta: "meta", ide.Status: "status", ide.Stat: "stat"}
 	var out []string
 	for _, l := range classify(cmd, strings.Split(output, "\n"), failed) {
 		s := names[l.Kind]
@@ -163,6 +164,16 @@ func TestClassifySearch(t *testing.T) {
 	checkClassified(t, "grep -n err calc.go", "12:if err != nil {", false, []string{"hit calc.go ^^^|12:if err != nil {"})
 	checkClassified(t, "git grep -n TODO", "a.py:3:# TODO", false, []string{"hit a.py ^^^^^^^|a.py:3:# TODO"})
 	checkClassified(t, "cat calc.go | grep -n err | head", "12:if err != nil {", false, []string{"hit calc.go ^^^|12:if err != nil {"})
+	checkClassified(t, "git show HEAD:calc.go | grep -n err", "12:if err != nil {", false, []string{"hit calc.go ^^^|12:if err != nil {"})
+	// A search without a file of its own after another: the hits are the other's.
+	checkClassified(t, "git show HEAD:calc.go | grep -n -E 'err|Div'; git diff calc.go | grep -c ''", "12:if err != nil {\n0", false,
+		[]string{"hit calc.go ^^^|12:if err != nil {", "out|0"})
+	checkClassified(t, "grep -n err calc.go; go vet ./...", "./calc.go:12:2: unreachable code", false, []string{"out|./calc.go:12:2: unreachable code"})
+	checkClassified(t, "grep -n x a.go; grep -c y b.go", "1:x\n0", false, []string{"hit a.go ^^|1:x", "out|0"})
+	// A search that prints numbered lines of its own takes no earlier search's file.
+	checkClassified(t, "grep -n x a.go; go test ./... 2>&1 | grep -n FAIL", "1:x\n12:--- FAIL: TestX", false,
+		[]string{"out|1:x", "out|12:--- FAIL: TestX"})
+	checkClassified(t, "git show --format=%h:%s HEAD | grep -n x", "3:x", false, []string{"out|3:x"})
 	// The flags that take a value, the patterns that look like redirections, pipes of stderr too.
 	checkClassified(t, "grep -n -A 3 Div calc.go", "12:func Div() {", false, []string{"hit calc.go ^^^|12:func Div() {"})
 	checkClassified(t, "grep -n '<div' index.html", "3:<div>", false, []string{"hit index.html ^^|3:<div>"})
@@ -190,5 +201,49 @@ func TestBashClassifiesOutput(t *testing.T) {
 	}
 	if want := []ide.LineKind{ide.Command, ide.Hunk, ide.Removed, ide.Added, ide.Gap}; !reflect.DeepEqual(kinds, want) {
 		t.Errorf("lines %v, want %v", kinds, want)
+	}
+}
+
+// A short git status gives each change its status, a diffstat its size: the terminal colours their
+// marks as git does. The command tells a short status, the look a diffstat.
+func TestClassifyGit(t *testing.T) {
+	out := "## main...origin/main\nM  staged.go\n M changed.go\n?? new.txt\n  indented\n" +
+		" calc.go       | 7 ++++++-\n {a => b}/x.go | 2 --\n img.png       | Bin 0 -> 12 bytes\n" +
+		" 3 files changed, 6 insertions(+), 3 deletions(-)"
+	checkClassified(t, "git status -sb && git diff --stat", out, false, []string{
+		"out|## main...origin/main",
+		"status|M  staged.go",
+		"status| M changed.go",
+		"status|?? new.txt",
+		"out|  indented",
+		"stat| calc.go       | 7 ++++++-",
+		"stat| {a => b}/x.go | 2 --",
+		"out| img.png       | Bin 0 -> 12 bytes",
+		"out| 3 files changed, 6 insertions(+), 3 deletions(-)",
+	})
+	checkClassified(t, "git status --porcelain=1", " m sub\nMm mod", false, []string{"status| m sub", "status|Mm mod"})
+	// What only looks like a short status is plain output.
+	checkClassified(t, "printf ' M x'", " M x", false, []string{"out| M x"})
+	checkClassified(t, "git status", " M x", false, []string{"out| M x"})
+}
+
+// The lines of a here-document's body are in the language of what it feeds: an interpreter's
+// script, the file cat or tee writes; the rest of the command is the shell's.
+func TestLineLangs(t *testing.T) {
+	for _, c := range []struct {
+		cmd  string
+		want []string
+	}{
+		{"python3 - <<'EOF'\ndef f():\n    pass\nEOF\necho done", []string{"", ".py", ".py", "", ""}},
+		{"cat > main.go <<EOF\npackage main\nEOF", []string{"", "main.go", ""}},
+		{"cat <<'EOF' > notes.md\n# x\nEOF", []string{"", "notes.md", ""}},
+		{"cd x && node <<-JS\n\tconsole.log(1)\n\tJS\nls", []string{"", ".js", "", ""}},
+		{"tee -a conf.yaml <<EOF\nk: v\nEOF", []string{"", "conf.yaml", ""}},
+		{"git commit -F - <<'MSG'\nfix it\nMSG", []string{"", "", ""}},
+		{"ls\npwd", []string{"", ""}},
+	} {
+		if got := lineLangs(c.cmd); !slices.Equal(got, c.want) {
+			t.Errorf("%q: %q, want %q", c.cmd, got, c.want)
+		}
 	}
 }

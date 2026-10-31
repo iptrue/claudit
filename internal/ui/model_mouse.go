@@ -2,9 +2,13 @@ package ui
 
 import (
 	"image"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/pixelbender/claudit/internal/ide"
+	"github.com/pixelbender/claudit/internal/ideview"
 )
 
 // zone is a place on screen a click acts on, as the last frame drew it; click gets the cell
@@ -149,15 +153,51 @@ func (m *Model) click(x, y int) tea.Cmd {
 	return nil
 }
 
-// clickIDE acts on a click in the IDE on the agent there (a row of the agents panel, a workplace on
-// the right): the camera pins on it. The keys go back to the prompt.
+// clickIDE acts on a press in the IDE on the agent there (a row of the agents panel, a workplace
+// on the right): its release, unless the press starts a selection, shows the agent alone, or,
+// alone already, every agent at work again. The keys go back to the prompt.
 func (m *Model) clickIDE(key string) tea.Cmd {
 	m.PanelFocus = false
+	m.onRelease = nil
 	if key != "" {
-		m.PanelSel = key
-		m.pinSelected()
+		m.onRelease = func() { m.pickAgent(key) }
 	}
 	return nil
+}
+
+// clickChat acts on a press on a line of the chat, a Bash line of call ("" for another line): its
+// release, unless the press starts a selection, shows where main ran it in the IDE of o, w×h cells
+// (none when h is 0). The keys go back to the prompt.
+func (m *Model) clickChat(call string, o ideview.Options, w, h int) tea.Cmd {
+	m.PanelFocus = false
+	m.onRelease = nil
+	if call != "" && h > 0 {
+		m.onRelease = func() { m.showCall(call, o, w, h) }
+	}
+	return nil
+}
+
+// showCall shows main alone, the camera pinned on it, its terminal scrolled to the lines of Bash
+// call call. A call the terminal holds no line of, not typed yet or long gone, shows nothing.
+func (m *Model) showCall(call string, o ideview.Options, w, h int) {
+	main := m.Sim.FindAgent("main")
+	if main == nil || !slices.ContainsFunc(main.Term.Lines, func(l ide.TermLine) bool { return l.Call == call }) {
+		return
+	}
+	m.PanelSel = "main"
+	m.pinSelected()
+	m.scrollIDE(ideview.TermScroll(m.Sim.State(), o, w, h, "main", call))
+}
+
+// pickAgent shows the agent with that key alone, the camera pinned on it; alone already, every
+// agent at work again.
+func (m *Model) pickAgent(key string) {
+	if st := m.Sim.State(); st.Pinned && st.Camera == key {
+		m.Sim.Pin("")
+		return
+	}
+	m.PanelSel = key
+	m.pinSelected()
 }
 
 // suggestZone is the rows of the completion list drawn at (x, y), w cells wide: a click puts that

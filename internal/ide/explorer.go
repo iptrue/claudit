@@ -2,6 +2,7 @@ package ide
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -37,7 +38,11 @@ func (st *State) Reveal(path string) int {
 		last := i == len(parts)-1
 		r := st.child(row, name)
 		if r < 0 {
-			r = st.insert(row, TreeRow{Depth: i, Name: name, Path: dir, Dir: !last})
+			rel := filepath.Join(parts[:i+1]...)
+			if !last {
+				rel += "/" // git cannot tell a folder that is not on disk yet
+			}
+			r = st.insert(row, TreeRow{Depth: i, Name: name, Path: dir, Dir: !last, Ignored: ignored(st.Root, rel)[rel]})
 		}
 		if !last {
 			if !st.Tree[r].Dir {
@@ -109,14 +114,35 @@ func (st *State) expand(r int) {
 func list(dir string, depth int) []TreeRow {
 	entries, _ := os.ReadDir(dir)
 	var rows []TreeRow
+	var names []string
 	for _, e := range entries {
 		if hidden[e.Name()] {
 			continue
 		}
 		rows = append(rows, TreeRow{Depth: depth, Name: e.Name(), Path: filepath.Join(dir, e.Name()), Dir: e.IsDir()})
+		names = append(names, e.Name())
+	}
+	ig := ignored(dir, names...)
+	for i := range rows {
+		rows[i].Ignored = ig[rows[i].Name]
 	}
 	slices.SortFunc(rows, compare)
 	return rows
+}
+
+// ignored is the set of paths, relative to dir, that git ignores; outside a repository, none.
+func ignored(dir string, paths ...string) map[string]bool {
+	if len(paths) == 0 {
+		return nil
+	}
+	cmd := exec.Command("git", "-C", dir, "check-ignore", "-z", "--stdin")
+	cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00"))
+	out, _ := cmd.Output() // exit 1: none ignored; 128: not a repository
+	set := map[string]bool{}
+	for _, p := range strings.Split(string(out), "\x00") {
+		set[p] = true
+	}
+	return set
 }
 
 func compare(a, b TreeRow) int {

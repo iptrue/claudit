@@ -44,11 +44,10 @@ type Model struct {
 	ShowHelp   bool          // F1: the key reference over everything
 	Wrap       bool          // the editor wraps long lines (alt+z)
 
-	Suggest     []protocol.Command // slash commands completing the prompt, shown above it
-	SuggestSel  int                // highlighted one
-	Away        bool               // the terminal lost the focus: what needs the user is announced
-	StartModel  string             // the model claude starts with as args or settings name it ("opus"), shown until a turn tells
-	StartEffort string             // the effort they name ("high"), as StartModel
+	Suggest    []protocol.Command // slash commands completing the prompt, shown above it
+	SuggestSel int                // highlighted one
+	Away       bool               // the terminal lost the focus: what needs the user is announced
+	StartModel string             // the model claude starts with as args or settings name it ("opus"), shown until a turn tells
 
 	chatMax   int            // largest useful ChatScroll, written by View
 	chatLines chatCache      // drawn chat entries, kept by View
@@ -85,6 +84,8 @@ type Model struct {
 	interrupting bool               // an Interrupt was sent: the error Result it brings ends the turn as asked
 	interrupts   int                // Interrupts sent, for their ids
 	cmdTurn      bool               // a slash command started the turn: it is not in the chat to be cut
+	onRelease    func()             // what a press on an agent in the IDE or a Bash line of the chat does as the button lets go; a drag does nothing
+	effortTurn   bool               // the turn runs /effort: claude's settings tell the level it set once it ends
 	quitAt       time.Time          // when quitKey last asked to be pressed again to quit
 	quitKey      string             // ctrl+c or esc
 	stderr       []string           // the last lines claude wrote to stderr, for the report of its exit
@@ -122,20 +123,23 @@ type ChatEntry struct {
 	Queued bool           // a prompt typed while claude works, drawn under the chat until it goes to claude
 	Cut    bool           // a prompt whose turn the user interrupted: red, a ✗ for its arrow
 	Answer bool           // the user's answer to a question of a popup, drawn right under it
+	Bash   bool           // a reply's: what a Bash call of main's says it does, no reply of claude's
+	Call   string         // a Bash reply's: the id of its call, whose lines a click finds in main's terminal
 	At     time.Time      // when it was said, shown grey at the right; zero for not known
-	Tokens protocol.Usage // a prompt's: the tokens its turn took, shown after it; zero for not known
+	Tokens protocol.Usage // a prompt's: the tokens its turn took, zero for not known; not drawn while the count is wrong
 }
 
 // Status feeds the status line.
 type Status struct {
 	Model   string
-	Effort  string // of the model: "low" … "max"; "" when not known, or "auto", the model's own
-	State   string // "starting", "idle", "thinking", "responding", "running", "waiting for you", "exited"
-	Busy    bool   // the agent is working: show a spinner
-	Frame   int    // spinner frame
-	Usage   string // rate-limit use, "5h 9% · 7d 58% · fable 3%", or the cost, "$0.0123", without limits
-	Elapsed string // how long the current turn has run, e.g. "12s"; "" between turns
-	Agents  int    // subagents and workflow agents at work
+	Effort  string  // of the model: "low" … "max"; "" when not known, for a model without efforts, or "auto" until claude tells its level
+	State   string  // "starting", "idle", "thinking", "responding", "running", "waiting for you", "exited"
+	Busy    bool    // the agent is working: show a spinner
+	Noted   float64 // a copy to the clipboard just made: how bright its note is in place of the hints, 1 down to 0
+	Frame   int     // spinner frame
+	Usage   string  // rate-limit use, "5h 9% · 7d 58% · fable 3%", or the cost, "$0.0123", without limits
+	Elapsed string  // how long the current turn has run, e.g. "12s"; "" between turns
+	Agents  int     // subagents and workflow agents at work
 	Replay  bool
 	Mode    string // permission mode: "default", "acceptEdits", "plan", …; "" until known
 	Alert   bool   // State says what went wrong, such as an API error: red
@@ -272,6 +276,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dragTo(msg.X, msg.Y)
 		}
 	case tea.MouseReleaseMsg:
+		if m.onRelease != nil && !m.sel.drag {
+			m.onRelease()
+		}
+		m.onRelease = nil
 		cmd = m.copySelection()
 	case tea.FocusMsg:
 		m.Away = false
@@ -306,11 +314,11 @@ func (m *Model) tickInterval() time.Duration {
 	return tickIdle
 }
 
-// animating reports whether something on screen moves by itself: a wipe, a popup dropping in,
-// the spinner while claude starts.
+// animating reports whether something on screen moves by itself: a popup dropping in, the spinner
+// while claude starts, a copied selection and its note going out.
 func (m *Model) animating() bool {
-	cut := ideview.Cutting(m.Sim.State(), m.Now)
-	return cut || m.Status.State == "starting" || !m.popupAt.IsZero() && m.Now.Sub(m.popupAt) < drawPopupDrop
+	return m.Status.State == "starting" || !m.popupAt.IsZero() && m.Now.Sub(m.popupAt) < drawPopupDrop ||
+		m.sel.noted(m.Now) > 0 // it outlasts the selection's light
 }
 
 func (m *Model) nextTick() tea.Cmd {
@@ -343,8 +351,12 @@ func (m *Model) handleEvent(ev protocol.Event) {
 	case protocol.ModeChanged:
 		m.setMode(ev.Mode)
 	case protocol.ModelChanged:
-		m.Status.Model = ev.Model
-		m.local("Set model to " + ev.Model)
+		m.Status.Model = ev.Model // the status says it: the chat need not
+		// Each model has an effort of its own. Asked only now: claude answers get_settings
+		// before a set_model sent ahead of it.
+		m.send(protocol.GetSettings{RequestID: fmt.Sprintf("settings-%d", m.modelReqs)})
+	case protocol.Settings:
+		m.Status.Effort = ev.Effort
 	case protocol.SideAnswer:
 		m.btwAnswered(ev.RequestID, ev.Text, false)
 	case protocol.ControlError:
@@ -354,6 +366,9 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		}
 		if strings.HasPrefix(ev.RequestID, "btw-") {
 			m.btwAnswered(ev.RequestID, ev.Message, true)
+			break
+		}
+		if strings.HasPrefix(ev.RequestID, "settings") { // a claude without get_settings: the effort stays unknown
 			break
 		}
 		m.local("Error: " + ev.Message)
@@ -382,9 +397,6 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.addCommands(ev.List)
 		m.cli.models, m.cli.outputStyles, m.cli.account = ev.Models, ev.OutputStyles, ev.Account
 		m.setVersion(ev.Version)
-		if m.Status.Effort == "" { // as its model
-			m.Status.Effort = m.StartEffort
-		}
 		if m.Status.Model == "" && m.StartModel != "" { // claude -p tells its model only with a turn
 			m.Status.Model = m.StartModel
 			for _, md := range ev.Models {
@@ -406,7 +418,7 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, At: now})
 		m.working("responding")
 	case protocol.TextDelta:
-		if n := len(m.Chat); n == 0 || m.Chat[n-1].Kind != AssistantEntry {
+		if n := len(m.Chat); n == 0 || m.Chat[n-1].Kind != AssistantEntry || m.Chat[n-1].Bash {
 			m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, At: now})
 		}
 		m.Chat[len(m.Chat)-1].Text += ev.Text
@@ -420,6 +432,9 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.toolUse(ev, now)
 		if ev.Parent == "" { // the status line is about main
 			m.working("running")
+		}
+		if d := inputString(ev.Input, "description"); ev.Parent == "" && ev.Name == "Bash" && d != "" {
+			m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, Text: d, At: now, Bash: true, Call: ev.ID}) // what it does, in claude's words
 		}
 	case protocol.ToolResult:
 		m.toolResult(ev, now)
@@ -446,6 +461,10 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.limits = ev
 	case protocol.Context:
 		m.context = ev
+		if ev.Model != "" { // what main's call runs on, a fallback's model too, not what the turn asked for
+			m.Status.Model = ev.Model
+			m.Sim.FindAgent("main").Model = ev.Model
+		}
 	case protocol.Result:
 		interrupted := m.interrupting && ev.IsError
 		m.interrupting = false
@@ -462,6 +481,10 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			m.notice = "claude is done"
 		}
 		m.Status.State, m.Status.Busy = "idle", false
+		if m.effortTurn { // "auto" is the model's own level: claude knows which
+			m.effortTurn = false
+			m.send(protocol.GetSettings{RequestID: "settings-effort"})
+		}
 		m.cost = ev.CostUSD
 		if m.windows == nil {
 			m.windows = map[string]int{}
@@ -744,6 +767,8 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		}
 	case "esc":
 		switch {
+		case m.Sim.State().Pinned: // first back to every agent at work: a claude at work goes on
+			m.Sim.Pin("")
 		case m.canInterrupt():
 			m.interrupt()
 		case len(m.Input.Text) > 0 || m.queueAt >= 0:
@@ -827,6 +852,7 @@ func (m *Model) prompt(text string) tea.Cmd {
 	}
 	m.send(m.message(text))
 	m.Status.State, m.Status.Busy, m.Status.Alert, m.cmdTurn = turnState(cmd, isCmd), true, false, isCmd
+	m.effortTurn = isCmd && cmd == "effort"
 	return nil
 }
 
@@ -931,7 +957,7 @@ func (m *Model) flush() {
 	}
 	m.send(m.message(strings.Join(m.pending[:n], "\n\n")))
 	first, isCmd := slash(m.pending[0])
-	m.cmdTurn = isCmd
+	m.cmdTurn, m.effortTurn = isCmd, isCmd && first == "effort"
 	for _, p := range m.pending[:n] {
 		if !m.cmdTurn { // a command goes alone and stays out of the chat
 			m.Chat = append(m.Chat, ChatEntry{Kind: UserEntry, Text: p, At: m.clock()})
