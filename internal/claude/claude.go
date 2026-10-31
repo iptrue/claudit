@@ -43,18 +43,19 @@ var flags = []string{
 func Spawn(ctx context.Context, args []string) (*Session, error) {
 	events := make(chan protocol.Event, 64)
 	send := make(chan protocol.Outbound, 64)
-	limits := make(chan protocol.RateLimits, 1)
-	env, err := proxyEnv(ctx, limits)
+	env, done, err := claudeEnv()
 	if err != nil {
 		return nil, err
 	}
 	p, err := start(ctx, args, env, events)
 	if err != nil {
+		done()
 		return nil, err
 	}
 
 	go func() {
 		defer close(events)
+		defer done() // before events close: claude is gone for good
 		for {
 			select {
 			case o := <-send:
@@ -70,8 +71,6 @@ func Spawn(ctx context.Context, args []string) (*Session, error) {
 					return
 				}
 				p = next
-			case l := <-limits:
-				emit(ctx, events, l)
 			case <-p.done:
 				emit(ctx, events, protocol.Exited{Err: p.err})
 				return
@@ -110,8 +109,8 @@ type proc struct {
 	err            error              // how it exited, once done
 }
 
-// start runs claude with args in env (nil: claudit's own). Its events go to events until it ends
-// or stop is called.
+// start runs claude with args in env (claudeEnv). Its events go to events until it ends or stop
+// is called.
 func start(ctx context.Context, args, env []string, events chan<- protocol.Event) (*proc, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, "claude", append(slices.Clone(flags), args...)...)
@@ -148,7 +147,11 @@ func start(ctx context.Context, args, env []string, events chan<- protocol.Event
 	}()
 
 	go func() {
+		limits := debugLimits{}
 		readLines(stdout, func(line []byte) bool {
+			if l, ok := limits.line(line); ok {
+				emit(ctx, events, l)
+			}
 			for _, ev := range protocol.Parse(line) {
 				emit(ctx, events, ev)
 			}

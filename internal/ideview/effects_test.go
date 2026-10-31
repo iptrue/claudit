@@ -118,8 +118,8 @@ func TestSpinningCaret(t *testing.T) {
 	}
 }
 
-// Typed lines flash in their agent's colour, stay lit while it is on that tool call, and fade once
-// it moves on. Only the background behind the text lights: no mark in the gutter, nothing past the
+// Typed lines flash green, as a diff's added lines, stay lit while their agent is on that tool
+// call, and fade once it moves on. Only the background behind the text lights: no mark in the gutter, nothing past the
 // end of the line.
 func TestGlow(t *testing.T) {
 	st := multiState()
@@ -127,7 +127,7 @@ func TestGlow(t *testing.T) {
 	buf.Glow = []ide.Glow{{Line: 0, Agent: "toolu_tests", At: now.Add(-100 * time.Millisecond)}}
 	out := Render(st, Options{Now: now}, 120, 30)
 	l := lineWith(out, "package main")
-	lit := sgr("48", glow(buf.Glow[0], now, theme.Agents[1]))
+	lit := sgr("48", glow(buf.Glow[0], now))
 	if strings.Contains(l, "▎") || !strings.Contains(l, lit) {
 		t.Errorf("fresh line does not glow: %q", l)
 	}
@@ -141,7 +141,7 @@ func TestGlow(t *testing.T) {
 		t.Errorf("the glow goes on past the text: %q", l)
 	}
 	buf.Glow[0].At = now.Add(-time.Hour)
-	held := theme.Mix(theme.Bg, theme.Agents[1], glowHold)
+	held := theme.Mix(theme.Bg, theme.Green, glowHold)
 	if l := lineWith(Render(st, Options{Now: now}, 120, 30), "package main"); !strings.Contains(l, sgr("48", held)) {
 		t.Errorf("a line typed by the call on screen does not stay lit: %q", l)
 	}
@@ -149,7 +149,7 @@ func TestGlow(t *testing.T) {
 	if l := lineWith(Render(st, Options{Now: now}, 120, 30), "package main"); strings.Contains(l, sgr("48", held)) {
 		t.Errorf("faded line still glows: %q", l)
 	}
-	if glow(ide.Glow{At: now}, now.Add(-time.Second), theme.OK) == nil {
+	if glow(ide.Glow{At: now}, now.Add(-time.Second)) == nil {
 		t.Error("a glow from the future (clock skew) should show at full strength")
 	}
 }
@@ -161,19 +161,98 @@ func TestOutputStyle(t *testing.T) {
 		"panic: runtime error":              sgr("38", theme.Err),
 		"warning: unused variable":          sgr("38", theme.Warn),
 		"all tests passed":                  sgr("38", theme.OK),
-		"+added line":                       sgr("38", theme.OK),
-		"-removed line":                     sgr("38", theme.Err),
-		"@@ -1,3 +1,4 @@":                   sgr("38", theme.Violet),
 		"plain output":                      sgr("38", theme.Code),
 		"Traceback (most recent call last)": sgr("38", theme.Err),
 		"took 42 ms":                        sgr("38", theme.Number), // the rest by its tokens
 		`name: "claudit"`:                   sgr("38", theme.String),
 		"enabled: true":                     sgr("38", theme.Keyword),
+		"Found 3 errors":                    sgr("38", theme.Err),
+		"ValueError: bad value":             sgr("38", theme.Err),
+		"./calc.go:12:2: undefined: x":      sgr("38", theme.Err),
+		"calc.go:3:1: warning: unused x":    sgr("38", theme.Warn),
 	}
 	for line, want := range cases {
 		if got := outputLine(sampleState(), line, line); !strings.Contains(got, want) {
 			t.Errorf("%q: %q, want colour %s", line, got, want)
 		}
+	}
+	// Saying there were none is no failure; a list is no diff, a clock no file.
+	if got := outputLine(sampleState(), "x.py:12: DeprecationWarning: old", "x.py:12: DeprecationWarning: old"); !strings.Contains(got, sgr("38", theme.Warn)) {
+		t.Errorf("a warning class is not yellow: %q", got)
+	}
+	for _, line := range []string{"Found 0 errors", "no failures, no warnings", "- a list item", "12:00:01: started",
+		"Tests run: 5, Failures: 0, Errors: 0", "calc_test.go:12: computing"} {
+		if got := outputLine(sampleState(), line, line); strings.Contains(got, sgr("38", theme.Err)) || strings.Contains(got, sgr("38", theme.Warn)) {
+			t.Errorf("%q is coloured as a failure or a warning: %q", line, got)
+		}
+	}
+}
+
+// termWith renders sampleState's terminal holding lines.
+func termWith(lines ...ide.TermLine) string {
+	st := sampleState()
+	st.Agents[0].Focus = ide.Terminal
+	st.Agents[0].Term = ide.Term{Lines: lines}
+	return Render(st, Options{}, 120, 30)
+}
+
+// A diff's changes go on green and red by their sign, their code in its colours, its hunks violet, the file's header in the
+// colour of headings and the rest of its header grey; the lines around a change are code.
+func TestTerminalDiff(t *testing.T) {
+	out := termWith(
+		ide.TermLine{Kind: ide.Meta, Text: "diff --git a/calc.go b/calc.go"},
+		ide.TermLine{Kind: ide.Meta, Text: "index 1a2b3c4..5d6e7f8 100644"},
+		ide.TermLine{Kind: ide.Hunk, Text: "@@ -1,4 +1,4 @@"},
+		ide.TermLine{Kind: ide.Code, Text: " func Div(a, b int) (int, error) {", Lang: "calc.go"},
+		ide.TermLine{Kind: ide.Removed, Text: "-    return a / b, nil"},
+		ide.TermLine{Kind: ide.Added, Text: "+    return 0, errors.New(\"pass\")"},
+	)
+	for text, want := range map[string]string{
+		"diff --git a/calc.go b/calc.go":      sgr("38", theme.Strong),
+		"index 1a2b3c4..5d6e7f8 100644":       sgr("38", theme.Dim),
+		"@@ -1,4 +1,4 @@":                     sgr("38", theme.Violet),
+		"-    return a / b, nil":              sgr("48", theme.RemovedBg),
+		"+    return 0, errors.New(\"pass\")": sgr("48", theme.AddedBg),
+	} {
+		if !styled(out, text, want) {
+			t.Errorf("%q is not coloured %s:\n%q", text, want, lineWith(out, text))
+		}
+	}
+	if l := lineWith(out, "func Div"); !strings.Contains(l, paint(" func Div(a, b int) (int, error) {", langOf("calc.go"))) {
+		t.Errorf("the line around the change is not Go as the editor draws it: %q", l)
+	}
+}
+
+// The text of a file is drawn as the editor draws its language, its errors no failure; a file of
+// no language known shows as plain output.
+func TestTerminalCode(t *testing.T) {
+	code := `  return fmt.Errorf("x: %w", err) // fail` // short of a wrap
+	out := termWith(ide.TermLine{Kind: ide.Code, Text: code, Lang: "internal/calc/calc.go"},
+		ide.TermLine{Kind: ide.Code, Text: "FAIL TestDiv", Lang: "build.log"})
+	if l := lineWith(out, "return fmt"); !strings.Contains(l, paint(code, langOf("calc.go"))) || strings.Contains(l, sgr("38", theme.Err)) {
+		t.Errorf("code not drawn as the editor draws it: %q", l)
+	}
+	if !styled(out, "FAIL TestDiv", sgr("38", theme.Err)) {
+		t.Errorf("a log's failure is not red: %q", lineWith(out, "FAIL"))
+	}
+}
+
+// A search's hit says where it is, the file in its explorer colour and the line grey, then shows its
+// line as code.
+func TestTerminalHit(t *testing.T) {
+	hit := "src/calc.go:12:func Div() {"
+	out := termWith(ide.TermLine{Kind: ide.Match, Text: hit, Lang: "src/calc.go", Prefix: len("src/calc.go:12:")})
+	l := lineWith(out, "func Div")
+	if !styled(l, "src/calc.go", sgr("38", fileTint("src/calc.go"))) || !styled(l, ":12:", sgr("38", theme.Dim)) {
+		t.Errorf("where the hit is: %q", l)
+	}
+	if !strings.Contains(l, paint("func Div() {", langOf("calc.go"))) {
+		t.Errorf("the hit's line is not Go as the editor draws it: %q", l)
+	}
+	// A hit in a file of no language known says how things went, as plain output does.
+	out = termWith(ide.TermLine{Kind: ide.Match, Text: "app.log:3:ERROR db down", Lang: "app.log", Prefix: len("app.log:3:")})
+	if !styled(out, "ERROR db down", sgr("38", theme.Err)) {
+		t.Errorf("a log's failure among hits is not red: %q", lineWith(out, "db down"))
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/pixelbender/claudit/internal/protocol"
 	"github.com/pixelbender/claudit/internal/theme"
 )
 
@@ -137,6 +138,14 @@ func drawEntry(e ChatEntry, w int) []string {
 			}
 			lines[i] = st.Render(prefix + l)
 		}
+		if took := drawTurnTokens(e.Tokens); took != "" { // what its turn took, after it, as the auto mode is drawn
+			tokens := " *" + took
+			if n := len(lines) - 1; ansi.StringWidth(lines[n])+ansi.StringWidth(tokens) <= w {
+				lines[n] += styleModeAuto.Render(tokens)
+			} else {
+				lines = append(lines, "  "+styleModeAuto.Render(tokens[1:]))
+			}
+		}
 		return lines
 	case AssistantEntry:
 		if strings.TrimSpace(e.Text) == "" {
@@ -238,13 +247,15 @@ func drawScroll(r []rune, cur, avail int) int {
 }
 
 // renderStatus draws the status line with the key hints that fit, one line of exactly width cells:
-// the model, the mode, the limits, the context, then what changes size often — what claude does,
-// the agents at work, the camera — so that the rest stays put.
+// the model, the mode, the limits, the context, then what claude does, which changes size often,
+// last, so that the rest stays put.
 func renderStatus(st Status, hints []string, width int) string {
 	dot := styleLime.Render("●")
 	switch {
 	case st.State == "exited":
 		dot = styleErr.Render("●")
+	case st.State == "starting":
+		dot = styleAccent.Render(drawSpinner[st.Frame%len(drawSpinner)])
 	case st.Busy:
 		dot = styleAccent.Render("●")
 	}
@@ -256,7 +267,11 @@ func renderStatus(st Status, hints []string, width int) string {
 	}
 	var parts []part
 	if st.Model != "" {
-		parts = append(parts, part{styleFg.Render(drawOneLine(st.Model)), 1})
+		model := styleFg.Render(drawOneLine(st.Model))
+		if st.Effort != "" {
+			model += styleDim.Render(" " + drawOneLine(st.Effort))
+		}
+		parts = append(parts, part{model, 1})
 	}
 	if mode := drawMode(st.Mode); mode != "" {
 		parts = append(parts, part{mode, 0})
@@ -289,22 +304,10 @@ func renderStatus(st Status, hints []string, width int) string {
 			s += styleDim.Render(" " + st.Elapsed)
 		}
 		moving = append(moving, s)
+	case state != "" && st.Alert:
+		moving = append(moving, styleErr.Render(state))
 	case state != "":
 		moving = append(moving, styleFg.Render(state))
-	}
-	if st.Agents > 0 {
-		agents := fmt.Sprintf("%d agents at work", st.Agents)
-		if st.Agents == 1 {
-			agents = "1 agent at work"
-		}
-		if st.Busy {
-			moving = append(moving, styleFg.Render(agents))
-		} else {
-			moving = append(moving, spin+drawShimmer(agents, st.Frame, theme.Fg))
-		}
-	}
-	if st.Camera != "" {
-		moving = append(moving, drawCamera(st.Camera, st.CameraColor))
 	}
 	sep := styleDim.Render(" · ")
 	join := func() string { return dot + " " + strings.Join(slices.Concat(steady, moving), sep) }
@@ -323,13 +326,8 @@ func renderStatus(st Status, hints []string, width int) string {
 	if len(hints) > 0 {
 		room -= 2 + ansi.StringWidth(strings.Join(hints, " · "))
 	}
-	// What does not fit goes whole, as a part cut short says nothing: what the camera's agent does,
-	// then the camera, then the agents at work. What claude does stays, cut only as a last resort.
+	// What claude does stays, cut only as a last resort.
 	line := join()
-	if st.Camera != "" && ansi.StringWidth(line) > room {
-		moving[len(moving)-1] = drawCamera(drawCameraOnly(st.Camera), st.CameraColor)
-		line = join()
-	}
 	for len(moving) > 1 && ansi.StringWidth(line) > room {
 		moving = moving[:len(moving)-1]
 		line = join()
@@ -347,19 +345,75 @@ func renderStatus(st Status, hints []string, width int) string {
 // drawStatusMoving is the room the status line keeps for what changes size often.
 const drawStatusMoving = 30
 
-// drawUsage draws the use of each rate-limit window in Status.Usage ("5h 9% · 7d 58%"): the window
-// grey, its use coloured by drawFull.
+// drawUsage draws the use of each rate-limit window in Status.Usage ("5h 9% 4h12m · 7d 58% fable
+// 3% 2d8h"): the windows and the resets grey, each use coloured by drawFull; a window at its limit
+// ("5h limit until 13:30") red, and extra usage paying past it yellow.
 func drawUsage(usage string) string {
 	parts := strings.Split(usage, " · ")
 	for i, p := range parts {
-		if j := strings.LastIndexByte(p, ' '); j >= 0 && strings.HasSuffix(p, "%") {
-			pct, _ := strconv.Atoi(p[j+1 : len(p)-1])
-			parts[i] = styleDim.Render(p[:j+1]) + drawFull(pct).Render(p[j+1:])
-		} else {
+		name, rest, _ := strings.Cut(p, " ")
+		use, _, _ := strings.Cut(rest, " ")
+		switch _, err := strconv.Atoi(strings.TrimSuffix(use, "%")); {
+		case strings.HasSuffix(use, "%") && err == nil:
+			var b strings.Builder
+			for words := strings.Fields(p); len(words) > 0; { // "7d 58% fable 3% 2d8h": name and use in pairs, then the reset
+				if len(words) == 1 {
+					b.WriteString(styleDim.Render(" " + words[0]))
+					break
+				}
+				pct, _ := strconv.Atoi(strings.TrimSuffix(words[1], "%"))
+				name := words[0] + " "
+				if b.Len() > 0 {
+					name = " " + name
+				}
+				b.WriteString(styleDim.Render(name) + drawFull(pct).Render(words[1]))
+				words = words[2:]
+			}
+			parts[i] = b.String()
+		case strings.HasPrefix(rest, "limit "):
+			parts[i] = styleDim.Render(name+" ") + styleErr.Render(rest)
+		case p == drawExtraUsage:
+			parts[i] = styleModeAuto.Render(p)
+		default:
 			parts[i] = styleFg.Render(p)
 		}
 	}
 	return strings.Join(parts, styleDim.Render(" · "))
+}
+
+// drawExtraUsage ends Status.Usage while extra usage pays past a window's limit.
+const drawExtraUsage = "extra usage"
+
+// drawTurnTokens is what a turn took, by what the tokens went to: "7.3k↓ 562k+ 3.7M↻", what claude
+// wrote, what it read anew (input and cache writes), what it read again from the cache on every
+// call. A part of none goes; "" for none at all.
+func drawTurnTokens(u protocol.Usage) string {
+	var parts []string
+	for _, p := range []struct {
+		n    int
+		mark string
+	}{{u.Output, "↓"}, {u.Input + u.CacheWrite, "+"}, {u.CacheRead, "↻"}} {
+		if p.n > 0 {
+			parts = append(parts, drawTokens(p.n)+p.mark)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// drawTokens is a count of tokens in few cells: "950", "1.2k", "48k", "3.4M", "500M".
+func drawTokens(n int) string {
+	for _, u := range []struct {
+		size float64
+		unit string
+	}{{1e9, "B"}, {1e6, "M"}, {1e3, "k"}} {
+		if f := float64(n) / u.size; f >= 1 {
+			if f < 10 {
+				return strings.TrimSuffix(fmt.Sprintf("%.1f", f), ".0") + u.unit
+			}
+			return fmt.Sprintf("%.0f", f) + u.unit
+		}
+	}
+	return strconv.Itoa(n)
 }
 
 // drawContext is how full main's context is, in few cells: "ctx" grey, the percentage coloured
@@ -392,8 +446,10 @@ var (
 // drawMode labels a permission mode as Claude Code does; the default mode shows nothing.
 func drawMode(mode string) string {
 	switch mode {
-	case "", "default":
+	case "":
 		return ""
+	case "default", "manual": // claude asks before what may change something
+		return styleFg.Render("⏵ manual mode")
 	case "plan":
 		return styleModePlan.Render("⏸ plan mode")
 	case "acceptEdits":
@@ -406,29 +462,4 @@ func drawMode(mode string) string {
 		return styleModeBypass.Render("⏵⏵ don't ask")
 	}
 	return styleAccent.Render("⏵⏵ " + drawOneLine(mode))
-}
-
-// drawCameraOnly is Status.Camera without what its agent does: "auto → tests".
-func drawCameraOnly(cam string) string {
-	if i := strings.LastIndex(cam, " ("); i >= 0 && strings.HasSuffix(cam, ")") {
-		return cam[:i]
-	}
-	return cam
-}
-
-// drawCamera renders Status.Camera, e.g. "auto → tests (Edit calc.py)", with the agent's name in its colour.
-func drawCamera(cam string, slot int) string {
-	cam = drawOneLine(cam)
-	var mode string
-	for _, sep := range []string{"→ ", "· "} {
-		if i := strings.Index(cam, sep); i >= 0 {
-			mode, cam = cam[:i+len(sep)], cam[i+len(sep):]
-			break
-		}
-	}
-	name, activity := cam, ""
-	if i := strings.Index(cam, " ("); i >= 0 && strings.HasSuffix(cam, ")") {
-		name, activity = cam[:i], cam[i:]
-	}
-	return styleFg.Render("cam "+mode) + lipgloss.NewStyle().Foreground(drawAgentColor(slot)).Render(name) + styleDim.Render(activity)
 }

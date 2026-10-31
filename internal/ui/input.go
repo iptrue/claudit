@@ -12,20 +12,27 @@ import (
 type Input struct {
 	Text   []rune
 	Cursor int
+	killed []rune // what the last kill cut out, for ctrl+y
 }
 
-// edit applies an editing key and reports whether the key was one.
+// edit applies an editing key and reports whether the key was one. The keys are those of a
+// shell's line editor, and the ones macOS terminals send for cmd and option with the arrows and
+// backspace.
 func (in *Input) edit(k tea.KeyPressMsg) bool {
 	switch k.String() {
-	case "left":
+	case "left", "ctrl+b":
 		in.Cursor = max(in.Cursor-1, 0)
-	case "right":
+	case "right", "ctrl+f":
 		in.Cursor = min(in.Cursor+1, len(in.Text))
-	case "home", "ctrl+a":
+	case "home", "ctrl+a", "super+left":
 		in.Cursor = 0
-	case "end", "ctrl+e":
+	case "end", "ctrl+e", "super+right":
 		in.Cursor = len(in.Text)
-	case "backspace":
+	case "alt+left", "alt+b", "ctrl+left":
+		in.Cursor = in.wordStart()
+	case "alt+right", "alt+f", "ctrl+right":
+		in.Cursor = in.wordEnd()
+	case "backspace", "ctrl+h":
 		before := string(in.Text[:in.Cursor])
 		if loc := placeholderTail.FindStringIndex(before); loc != nil { // a placeholder goes whole
 			n := utf8.RuneCountInString(before[loc[0]:])
@@ -35,14 +42,17 @@ func (in *Input) edit(k tea.KeyPressMsg) bool {
 			in.Text = slices.Delete(in.Text, in.Cursor-1, in.Cursor)
 			in.Cursor--
 		}
-	case "delete":
+	case "delete", "ctrl+d":
 		if in.Cursor < len(in.Text) {
-			in.Text = slices.Delete(in.Text, in.Cursor, in.Cursor+1)
+			i, j := in.whole(in.Cursor, in.Cursor+1)
+			in.Text = slices.Delete(in.Text, i, j)
+			in.Cursor = i
 		}
-	case "ctrl+u":
-		in.Text = slices.Delete(in.Text, 0, in.Cursor)
-		in.Cursor = 0
-	case "ctrl+w":
+	case "ctrl+u", "super+backspace":
+		in.kill(0, in.Cursor)
+	case "ctrl+k":
+		in.kill(in.Cursor, len(in.Text))
+	case "ctrl+w": // back to a blank, as in a shell
 		i := in.Cursor
 		for i > 0 && unicode.IsSpace(in.Text[i-1]) {
 			i--
@@ -50,8 +60,13 @@ func (in *Input) edit(k tea.KeyPressMsg) bool {
 		for i > 0 && !unicode.IsSpace(in.Text[i-1]) {
 			i--
 		}
-		in.Text = slices.Delete(in.Text, i, in.Cursor)
-		in.Cursor = i
+		in.kill(i, in.Cursor)
+	case "alt+backspace":
+		in.kill(in.wordStart(), in.Cursor)
+	case "alt+d":
+		in.kill(in.Cursor, in.wordEnd())
+	case "ctrl+y":
+		in.insert(string(in.killed))
 	default:
 		if k.Text == "" {
 			return false
@@ -59,6 +74,57 @@ func (in *Input) edit(k tea.KeyPressMsg) bool {
 		in.insert(k.Text)
 	}
 	return true
+}
+
+// kill cuts runes [i, j) out, and the placeholders they cut into, and keeps them for ctrl+y;
+// cutting nothing keeps the last kill.
+func (in *Input) kill(i, j int) {
+	if i >= j {
+		return
+	}
+	i, j = in.whole(i, j)
+	in.killed = slices.Clone(in.Text[i:j])
+	in.Text = slices.Delete(in.Text, i, j)
+	in.Cursor = i
+}
+
+// whole widens runes [i, j) to the placeholders they cut into: a long paste or a picture goes whole,
+// as backspace takes it, or its text would go to claude in its place.
+func (in *Input) whole(i, j int) (int, int) {
+	s := string(in.Text)
+	for _, m := range placeholderRe.FindAllStringIndex(s, -1) {
+		if a, b := utf8.RuneCountInString(s[:m[0]]), utf8.RuneCountInString(s[:m[1]]); a < j && b > i {
+			i, j = min(i, a), max(j, b)
+		}
+	}
+	return i, j
+}
+
+// isWord reports whether r belongs to a word, for the word moves: letters, digits and "_".
+func isWord(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
+
+// wordStart is where alt+b goes: back over what is no word, then over the word before the cursor.
+func (in *Input) wordStart() int {
+	i := in.Cursor
+	for i > 0 && !isWord(in.Text[i-1]) {
+		i--
+	}
+	for i > 0 && isWord(in.Text[i-1]) {
+		i--
+	}
+	return i
+}
+
+// wordEnd is where alt+f goes: on over what is no word, then over the word after the cursor.
+func (in *Input) wordEnd() int {
+	i := in.Cursor
+	for i < len(in.Text) && !isWord(in.Text[i]) {
+		i++
+	}
+	for i < len(in.Text) && isWord(in.Text[i]) {
+		i++
+	}
+	return i
 }
 
 // insert puts s at the cursor and moves the cursor past it.

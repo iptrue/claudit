@@ -80,22 +80,23 @@ func TestModelResume(t *testing.T) {
 	if !ok {
 		t.Fatalf("popup %#v, chat %+v", m.Popup, m.Chat)
 	}
+	before := p.Sessions
 	var ids []string
 	for _, s := range p.Sessions {
 		ids = append(ids, s.ID)
 	}
-	if !reflect.DeepEqual(ids, []string{"a1", "b2"}) { // the latest first, without the current one
+	if !reflect.DeepEqual(ids, []string{"current", "a1", "b2"}) { // the latest first, the current one marked
 		t.Errorf("listed %q", ids)
 	}
 	box := ansi.Strip(renderPopup(p, 60, 20))
-	for _, want := range []string{"Resume a conversation  2", "› Add div", "2h ago", "Fix the tests", "3d ago"} {
+	for _, want := range []string{"Resume a conversation  3", "  This one ✓", "› Add div", "2h ago", "Fix the tests", "3d ago"} {
 		if !strings.Contains(box, want) {
 			t.Errorf("popup lacks %q:\n%s", want, box)
 		}
 	}
 
 	modelPress(m, inputKeys("down down up esc")...)
-	if m.Popup != nil || p.Cursor != 0 || len(*sent) != 0 {
+	if m.Popup != nil || p.Cursor != 1 || len(*sent) != 0 {
 		t.Fatalf("esc: popup %#v, cursor %d, sent %#v", m.Popup, p.Cursor, *sent)
 	}
 
@@ -122,9 +123,10 @@ func TestModelResume(t *testing.T) {
 		t.Errorf("state %q once claude answers", m.Status.State)
 	}
 
-	// The conversation resumed is the current one now: the other one and the old one are listed.
+	// The list stays as it was; the mark goes to the conversation resumed, the highlight to the first other.
 	modelResumeSubmit(m, "/resume")
-	if p, ok := m.Popup.(*ResumePopup); !ok || len(p.Sessions) != 2 || p.Sessions[0].ID != "current" {
+	p, ok = m.Popup.(*ResumePopup)
+	if !ok || !reflect.DeepEqual(p.Sessions, before) || p.Current != "a1" || p.Cursor != 0 {
 		t.Errorf("after resuming: %#v", m.Popup)
 	}
 }
@@ -142,10 +144,10 @@ func TestModelResumeQuery(t *testing.T) {
 		t.Fatalf("popup %#v, sent %#v", m.Popup, *sent)
 	}
 
-	// "Add div" and "Fix the tests" match, "This one" is the current conversation.
+	// "Add div", "Fix the tests" and "This one", the current conversation, match.
 	m, sent = modelResumeNew(t)
 	modelResumeSubmit(m, "/resume i")
-	if p, ok := m.Popup.(*ResumePopup); !ok || len(p.Sessions) != 2 || len(*sent) != 0 {
+	if p, ok := m.Popup.(*ResumePopup); !ok || len(p.Sessions) != 3 || len(*sent) != 0 {
 		t.Errorf("popup %#v, sent %#v", m.Popup, *sent)
 	}
 
@@ -159,8 +161,15 @@ func TestModelResumeQuery(t *testing.T) {
 func TestModelResumeRefused(t *testing.T) {
 	m, sent := modelResumeNew(t)
 	modelResumeSubmit(m, "/resume current") // the one it is in
-	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "no conversation matches") {
+	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "already in this conversation") {
 		t.Errorf("current: popup %#v, sent %#v, chat %+v", m.Popup, *sent, m.Chat)
+	}
+
+	m, sent = modelResumeNew(t)
+	modelResumeSubmit(m, "/resume")
+	modelPress(m, inputKeys("up enter")...) // the current one, picked from the list
+	if m.Popup != nil || len(*sent) != 0 || !modelResumeSaid(m, "already in this conversation") {
+		t.Errorf("current from the list: popup %#v, sent %#v, chat %+v", m.Popup, *sent, m.Chat)
 	}
 
 	m, sent = modelResumeNew(t)

@@ -352,6 +352,34 @@ func TestModel(t *testing.T) {
 	}
 }
 
+// The effort claude starts with is picked as claude does: $CLAUDE_CODE_EFFORT_LEVEL, then --effort,
+// then the effortLevel of the managed, local, project and user settings; "" when nothing names one.
+func TestEffort(t *testing.T) {
+	cwd, config := t.TempDir(), t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
+	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
+	defer func(old string) { managedSettings = old }(managedSettings)
+	managedSettings = filepath.Join(t.TempDir(), "managed-settings.json")
+	if got := Effort(nil, cwd); got != "" {
+		t.Errorf("nothing names one: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(config, "settings.json"), []byte(`{"effortLevel":"medium"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := Effort(nil, cwd); got != "medium" {
+		t.Errorf("settings: %q", got)
+	}
+	for _, args := range [][]string{{"--effort", "high"}, {"-c", "--effort=high"}} {
+		if got := Effort(args, cwd); got != "high" {
+			t.Errorf("Effort(%q) = %q", args, got)
+		}
+	}
+	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
+	if got := Effort([]string{"--effort", "high"}, cwd); got != "low" {
+		t.Errorf("env: %q", got)
+	}
+}
+
 // claudit starts claude in a mode only when neither the args nor the settings pick one.
 func TestWithMode(t *testing.T) {
 	cwd, config := t.TempDir(), t.TempDir()

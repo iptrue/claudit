@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -21,6 +22,45 @@ type cliInfo struct {
 	outputStyles []string
 	outputStyle  string
 	mcp          []protocol.MCPServer
+}
+
+// minClaude is the oldest claude claudit is built for. By its changelog, the newest of what claudit
+// leans on came by then: --permission-mode auto (2.1.86), workflow progress in headless sessions
+// (2.1.198), set_model mid-turn (2.1.212), `claude plugin list --json --available` (2.1.265).
+const minClaude = "2.1.265"
+
+// updateHint is what claudit says when claude is older than minClaude.
+const updateHint = "run claude update"
+
+// setVersion keeps the version claude reports. The first one it hears of, if older than
+// minClaude, is told to update; a recording's is the recording's own business.
+func (m *Model) setVersion(v string) {
+	if v == "" {
+		return
+	}
+	if m.cli.version == "" && !m.Status.Replay && olderThan(v, minClaude) {
+		m.local("claude " + v + " is older than " + minClaude + ", which claudit is built for · " + updateHint)
+	}
+	m.cli.version = v
+}
+
+// olderThan reports whether version a ("2.1.200") comes before b. A pre-release suffix is
+// ignored; a version that does not parse is not older.
+func olderThan(a, b string) bool {
+	parts := func(v string) []int {
+		v, _, _ = strings.Cut(v, "-")
+		var out []int
+		for p := range strings.SplitSeq(v, ".") {
+			n, err := strconv.Atoi(p)
+			if err != nil {
+				return nil
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+	pa, pb := parts(a), parts(b)
+	return pa != nil && pb != nil && slices.Compare(pa, pb) < 0
 }
 
 // local puts in the chat the output of a slash command claudit ran itself, or what one did that
@@ -153,6 +193,9 @@ func (m *Model) openPicker(cmd string) bool {
 	case "effort":
 		if current != nil {
 			for _, e := range current.Efforts {
+				if e == m.Status.Effort {
+					p.Current = len(p.Options)
+				}
 				p.Options = append(p.Options, Option{Label: e})
 			}
 			p.Options = append(p.Options, Option{Label: "auto", Description: "the model's own choice"})

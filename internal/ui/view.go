@@ -228,10 +228,9 @@ func drawTitle(st Status, asking bool) (string, *tea.ProgressBar) {
 	return title, bar
 }
 
-// drawNotice rings the terminal and posts text as a desktop notification (OSC 9: iTerm2, WezTerm,
-// Ghostty; inside tmux the bell flags the window).
+// drawNotice posts text as a desktop notification (OSC 9: iTerm2, WezTerm, Ghostty), without a bell.
 func drawNotice(text string) string {
-	return "\a\x1b]9;" + ansi.Truncate(drawOneLine(text), 160, "…") + "\x07"
+	return "\x1b]9;" + ansi.Truncate(drawOneLine(text), 160, "…") + "\x07"
 }
 
 // drawLayout splits the height: the IDE on top, then the chat, as tall as its chat lines up to

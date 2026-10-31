@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pixelbender/claudit/internal/ide"
 	"github.com/pixelbender/claudit/internal/protocol"
@@ -718,6 +719,10 @@ func TestModelTick(t *testing.T) {
 	if m.Init() == nil {
 		t.Fatal("Init returned no tick")
 	}
+	if got := m.tickInterval(); got != tickAmbient { // the spinner while claude starts
+		t.Errorf("starting interval %v", got)
+	}
+	m.Status.State = "idle"
 	if got := m.tickInterval(); got != tickIdle { // nothing moves
 		t.Errorf("idle interval %v", got)
 	}
@@ -766,11 +771,231 @@ func TestModelLifecycleEvents(t *testing.T) {
 	)
 	// The reason claude exited stays in the chat, once, with what it wrote to stderr.
 	report := "claude exited (exit status 1)\n  warning: x"
-	if want := []ChatEntry{{Kind: CommandEntry, Text: "error_max_turns", At: modelT0}, {Kind: CommandEntry, Text: "Error: " + report, At: modelT0}}; !reflect.DeepEqual(m.Chat, want) || m.ExitReport() != report {
+	if want := []ChatEntry{{Kind: CommandEntry, Text: "Error: " + report, At: modelT0}}; !reflect.DeepEqual(m.Chat, want) || m.ExitReport() != report {
 		t.Errorf("chat %#v report %q", m.Chat, m.ExitReport())
 	}
 	if m.Status.State != "exited" || m.Status.Busy {
 		t.Errorf("after exit: status %+v", m.Status)
+	}
+}
+
+// An API call retried, and a compaction, show in the status until claude goes on.
+func TestModelRetryAndCompaction(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelEvents(m, protocol.Thinking{}, protocol.APIRetry{Attempt: 2, MaxRetries: 10, Delay: 5 * time.Second, Status: 529})
+	if m.Status.State != "overloaded · retry 2/10" || !m.Status.Busy {
+		t.Errorf("status %+v", m.Status)
+	}
+	for status, want := range map[int]string{0: "connection error · retry 1/10", 429: "rate limited · retry 1/10", 503: "API error 503 · retry 1/10"} {
+		modelEvents(m, protocol.APIRetry{Attempt: 1, MaxRetries: 10, Status: status})
+		if m.Status.State != want {
+			t.Errorf("status %d: state %q, want %q", status, m.Status.State, want)
+		}
+	}
+	modelEvents(m, protocol.TextStart{})
+	if m.Status.State != "responding" {
+		t.Errorf("after the retry: state %q", m.Status.State)
+	}
+	modelEvents(m, protocol.Compacting{On: true})
+	if m.Status.State != "compacting" {
+		t.Errorf("compaction: state %q", m.Status.State)
+	}
+	modelEvents(m, protocol.Compacting{On: false})
+	if m.Status.State != "thinking" {
+		t.Errorf("after the compaction: state %q", m.Status.State)
+	}
+	modelEvents(m, protocol.TextStart{}, protocol.Compacting{On: false})
+	if m.Status.State != "responding" {
+		t.Errorf("a compaction that did not start ended: state %q", m.Status.State)
+	}
+	// After the turn, a retry or a compaction (a side call's, a background agent's) starts no turn.
+	modelEvents(m, protocol.Result{}, protocol.APIRetry{Attempt: 1, MaxRetries: 10, Status: 529}, protocol.Compacting{On: true})
+	if m.Status.State != "idle" || m.Status.Busy {
+		t.Errorf("after the turn: status %+v", m.Status)
+	}
+	// A list the user opened hides nothing of what claude does; only a question covers it.
+	modelEvents(m, protocol.Thinking{})
+	m.Popup = &ResumePopup{}
+	modelEvents(m, protocol.APIRetry{Attempt: 3, MaxRetries: 10, Status: 529})
+	if m.Status.State != "overloaded · retry 3/10" {
+		t.Errorf("under a list: state %q", m.Status.State)
+	}
+}
+
+// The effort shows beside the model: as the args or settings name it, as a turn tells it when it
+// does (claude 2.1.314 does not), as /effort sets it; "auto", the model's own, shows none.
+func TestModelEffort(t *testing.T) {
+	m, sent := modelNew(t, false)
+	m.StartModel, m.StartEffort = "opus", "xhigh"
+	m.known["effort"] = true
+	modelEvents(m, protocol.Commands{}, protocol.Init{SessionID: "s", Model: "claude-opus-5-5"})
+	if m.Status.Effort != "xhigh" {
+		t.Errorf("an init that says nothing of it: effort %q", m.Status.Effort)
+	}
+	modelEvents(m, protocol.Init{SessionID: "s", Model: "claude-opus-5-5", Effort: "high"})
+	if m.Status.Effort != "high" {
+		t.Errorf("an init that tells it: effort %q", m.Status.Effort)
+	}
+	for _, tt := range []struct{ typed, want string }{{"/effort low", "low"}, {"/effort auto", ""}, {"/effort MAX", "max"}, {"/effort nonsense", "max"}} {
+		modelEvents(m, protocol.Result{})
+		modelPress(m, inputTyped(tt.typed)...)
+		modelPress(m, inputKey("enter"))
+		if m.Status.Effort != tt.want {
+			t.Errorf("%s: effort %q, want %q (sent %v)", tt.typed, m.Status.Effort, tt.want, *sent)
+		}
+	}
+}
+
+// An API failure goes to the status, red, not the chat, and stays there until claude goes on; an
+// error retried away never shows.
+func TestModelFailureInStatus(t *testing.T) {
+	m, _ := modelNew(t, false)
+	failure := `API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
+	modelPress(m, inputTyped("hi")...)
+	modelPress(m, inputKey("enter"))
+	modelEvents(m, protocol.CLIReply{Text: failure}, protocol.Result{IsError: true, Text: failure})
+	if len(m.Chat) != 1 || m.Status.State != "API error 529 · Overloaded" || !m.Status.Alert || m.Status.Busy {
+		t.Errorf("chat %+v status %+v", m.Chat, m.Status)
+	}
+	modelPress(m, inputTyped("again")...)
+	modelPress(m, inputKey("enter"))
+	if m.Status.State != "thinking" || m.Status.Alert {
+		t.Errorf("the next turn: status %+v", m.Status)
+	}
+	modelEvents(m, protocol.APIRetry{Attempt: 1, MaxRetries: 10, Status: 529}, protocol.TextStart{}, protocol.Result{})
+	if m.Status.State != "idle" || m.Status.Alert {
+		t.Errorf("retried away: status %+v", m.Status)
+	}
+	modelEvents(m, protocol.Thinking{}, protocol.Result{IsError: true, Text: "error_max_turns"})
+	if m.Status.State != "error_max_turns" || !m.Status.Alert || len(m.Chat) != 3 {
+		t.Errorf("another error: chat %+v status %+v", m.Chat, m.Status)
+	}
+	if got := failureState("API Error: Request timed out."); got != "API error · Request timed out." {
+		t.Errorf("timeout: %q", got)
+	}
+}
+
+// A prompt shows what its turn took after it: what claude wrote, what it read anew, what it read
+// again from the cache. A slash command's turn shows none. A /compact compacts from the start.
+func TestModelPromptTokens(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelPress(m, inputTyped("hi")...)
+	modelPress(m, inputKey("enter"))
+	// A process's first result counts what earlier processes of the conversation took too
+	// (--resume): the turn's own count goes after the prompt.
+	turn := protocol.Usage{Input: 104, Output: 7327, CacheRead: 3672567, CacheWrite: 561748}
+	all := protocol.Usage{Input: 1000, Output: 90000, CacheRead: 27000000, CacheWrite: 1000000}
+	modelEvents(m, protocol.Result{Usage: all, Turn: turn})
+	if len(m.Chat) != 1 || m.Chat[0].Tokens != turn {
+		t.Fatalf("chat %+v", m.Chat)
+	}
+	if lines := drawEntry(m.Chat[0], 60); !strings.HasSuffix(lines[len(lines)-1], styleModeAuto.Render(" *7.3k↓ 562k+ 3.7M↻")) {
+		t.Errorf("drawn %q", lines)
+	}
+	m.known["compact"] = true
+	modelPress(m, inputTyped("/compact")...)
+	modelPress(m, inputKey("enter"))
+	if m.Status.State != "compacting" {
+		t.Errorf("/compact: state %q", m.Status.State)
+	}
+	all.Output += 500
+	modelEvents(m, protocol.Result{Usage: all, Turn: protocol.Usage{Output: 500}})
+	if m.Chat[0].Tokens != turn {
+		t.Errorf("a command's turn took the prompt's tokens: %+v", m.Chat)
+	}
+	// Then a prompt shows what its turn added to the process's count, its subagents' too.
+	modelPress(m, inputTyped("more")...)
+	modelPress(m, inputKey("enter"))
+	all.Output, all.CacheRead = all.Output+2000, all.CacheRead+400000
+	modelEvents(m, protocol.Result{Usage: all, Turn: protocol.Usage{Output: 1000, CacheRead: 200000}})
+	if n := len(m.Chat); m.Chat[n-1].Tokens != (protocol.Usage{Output: 2000, CacheRead: 400000}) {
+		t.Errorf("the second prompt took %+v", m.Chat[n-1].Tokens)
+	}
+	if lines := drawEntry(m.Chat[len(m.Chat)-1], 60); !strings.HasSuffix(lines[len(lines)-1], styleModeAuto.Render(" *2k↓ 400k↻")) {
+		t.Errorf("a part of none goes: drawn %q", lines)
+	}
+	// An answer to claude's question is no prompt: the turn's tokens go after the prompt.
+	modelPress(m, inputTyped("ask")...)
+	modelPress(m, inputKey("enter"))
+	modelAt(m, 2*popupGrace) // the enter goes to the question, not to the prompt typed just before
+	modelAsk(t, m, "r1", modelFixtureQuestion)
+	modelPress(m, inputKey("enter"))
+	all.Output += 300
+	modelEvents(m, protocol.Result{Usage: all, Turn: protocol.Usage{Output: 300}})
+	if n := len(m.Chat); m.Chat[n-3].Tokens.Output != 300 || m.Chat[n-1].Tokens != (protocol.Usage{}) {
+		t.Errorf("tokens after the prompt %+v, after the answer %+v", m.Chat[n-3].Tokens, m.Chat[n-1].Tokens)
+	}
+	for n, want := range map[int]string{950: "950", 1234: "1.2k", 48000: "48k", 3400000: "3.4M", 500000000: "500M", 2000000000: "2B"} {
+		if got := drawTokens(n); got != want {
+			t.Errorf("drawTokens(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// claude's "manual" is the default mode, which shows as such.
+func TestModelManualMode(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelEvents(m, protocol.ModeChanged{Mode: "manual"})
+	if m.Status.Mode != "default" || m.extraMode != "" || ansi.Strip(drawMode(m.Status.Mode)) != "⏵ manual mode" {
+		t.Errorf("mode %q extra %q drawn %q", m.Status.Mode, m.extraMode, drawMode(m.Status.Mode))
+	}
+}
+
+// A turn falling back to another model shows it in the status, and says why in the chat.
+func TestModelFallback(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelEvents(m, protocol.Init{SessionID: "s", Model: "claude-opus-5-5"}, protocol.TextStart{}, protocol.TextDelta{Text: "Let me check."},
+		protocol.ModelFallback{From: "claude-opus-5-5", To: "claude-sonnet-5-5", Trigger: "overloaded", Text: "Opus is overloaded: switched to Sonnet"})
+	if m.Status.Model != "claude-sonnet-5-5" {
+		t.Errorf("model %q", m.Status.Model)
+	}
+	modelEvents(m, protocol.ModelFallback{From: "claude-opus-5-5", To: "claude-haiku-5-5", Trigger: "server_error"})
+	want := []ChatEntry{
+		{Kind: AssistantEntry, Text: "Let me check.", At: modelT0}, // said before the call that fell back
+		{Kind: CommandEntry, Text: "Opus is overloaded: switched to Sonnet", At: modelT0},
+		{Kind: CommandEntry, Text: "claude-opus-5-5 failed (server_error): this turn runs on claude-haiku-5-5", At: modelT0},
+	}
+	if !reflect.DeepEqual(m.Chat, want) {
+		t.Errorf("chat %#v", m.Chat)
+	}
+}
+
+// A claude older than minClaude is told to update, once; newer ones, versions that do not parse
+// and the claude of a recording are not.
+func TestModelOldClaude(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelEvents(m, protocol.Commands{Version: "2.1.200"}, protocol.Init{SessionID: "s", Version: "2.1.200"})
+	want := []ChatEntry{{Kind: CommandEntry, Text: "claude 2.1.200 is older than " + minClaude + ", which claudit is built for · run claude update", At: modelT0}}
+	if !reflect.DeepEqual(m.Chat, want) || m.cli.version != "2.1.200" {
+		t.Errorf("chat %#v version %q", m.Chat, m.cli.version)
+	}
+	for _, v := range []string{minClaude, "2.1.1000", "2.2.0", "3.0.0-beta.1", "dev"} {
+		m, _ := modelNew(t, false)
+		modelEvents(m, protocol.Commands{Version: v})
+		if len(m.Chat) != 0 {
+			t.Errorf("claude %s: chat %#v", v, m.Chat)
+		}
+	}
+	m, _ = modelNew(t, true)
+	modelEvents(m, protocol.Init{SessionID: "s", Version: "2.1.200"})
+	if len(m.Chat) != 0 {
+		t.Errorf("replay: chat %#v", m.Chat)
+	}
+}
+
+// claude dying on a flag, or a flag's value, it does not know is too old: the report of its exit
+// says to update it.
+func TestModelExitUnknownOption(t *testing.T) {
+	for _, said := range []string{
+		"Error: unknown option '--include-partial-messages'",
+		"Error: option '--permission-mode <mode>' argument 'auto' is invalid. Allowed choices are acceptEdits, bypassPermissions, default, plan.",
+	} {
+		m, _ := modelNew(t, false)
+		modelEvents(m, protocol.Stderr{Line: said}, protocol.Exited{Err: errors.New("exit status 1")})
+		report := "claude exited (exit status 1)\n  " + said + "\n  claudit needs claude " + minClaude + " or newer · run claude update"
+		if m.ExitReport() != report {
+			t.Errorf("report %q, want %q", m.ExitReport(), report)
+		}
 	}
 }
 
@@ -885,7 +1110,7 @@ func TestModelReplaysFixture(t *testing.T) {
 	if n := len(m.Chat); n == 0 || !strings.Contains(m.Chat[n-1].Text, "div") {
 		t.Errorf("final reply missing: %+v", m.Chat)
 	}
-	if m.Status.Model != "claude-haiku-5-5" || m.Status.State != "idle" || m.Status.Busy || m.Status.Usage != "5h 9% · 7d 58%" ||
+	if m.Status.Model != "claude-haiku-5-5" || m.Status.State != "idle" || m.Status.Busy || !strings.HasPrefix(m.Status.Usage, "5h 9% ") || !strings.Contains(m.Status.Usage, " · 7d 58% ") ||
 		m.Status.Context != 34433.0/1000000 {
 		t.Errorf("final status %+v", m.Status)
 	}

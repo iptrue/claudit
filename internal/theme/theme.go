@@ -35,6 +35,8 @@ var (
 	SelBg       = Mix(Blue, Bg, 0.65)
 	SelBgDim    = Mix(Blue, Bg, 0.75) // a selection out of focus: the explorer's while its agent works elsewhere
 	LineBg      = Mix(Fg, Bg, 0.93)
+	AddedBg     = Mix(Green, Bg, 0.8) // a diff's added line
+	RemovedBg   = Mix(Red, Bg, 0.8)   // a diff's removed line
 	OK          = Green
 	Err         = Red
 	Warn        = Yellow

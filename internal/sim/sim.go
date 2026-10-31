@@ -34,7 +34,6 @@ type lane struct {
 	queue []*scene  // scenes waiting to play
 	cur   *scene    // the scene playing, nil when idle
 	clock time.Time // when the last step ran; zero while idle, the last Tick while blocked
-	runAt time.Time // when the running command started, for the spinner
 }
 
 // scene is the animation of one tool call: a FIFO of steps.
@@ -377,7 +376,7 @@ func (s *Sim) advance(l *lane, now time.Time) bool {
 		l.clock = now // blocked: the next step counts its delay from here, not from the past
 	}
 	if t := &l.a.Term; t.Running {
-		if f := int(now.Sub(l.runAt) / spinFrame); f != t.Spinner {
+		if f := int(now.Sub(t.RunAt) / spinFrame); f != t.Spinner {
 			t.Spinner = f
 			changed = true
 		}

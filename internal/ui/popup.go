@@ -221,8 +221,8 @@ func drawBtw(p *BtwPopup, w, rows int) []string {
 	return append(append(lines, body...), "", styleDim.Render(ansi.Truncate(hints, w, "…")))
 }
 
-// drawResume draws the conversations to resume with their ages, scrolled to keep the highlighted
-// one in sight.
+// drawResume draws the conversations to resume with their ages, the one claude is in marked as
+// pickers mark the one in effect, scrolled to keep the highlighted one in sight.
 func drawResume(p *ResumePopup, w, rows int) ([]string, []drawHit) {
 	head := styleAccent.Render("Resume a conversation") + styleDim.Render(fmt.Sprintf("  %d", len(p.Sessions)))
 	lines := []string{ansi.Truncate(head, w, "…"), ""}
@@ -236,8 +236,16 @@ func drawResume(p *ResumePopup, w, rows int) ([]string, []drawHit) {
 			mark, st = styleAccent.Render("› "), styleAccent
 		}
 		age := drawAge(p.Now.Sub(s.Modified))
-		title := drawFitTrunc(drawOneLine(s.Title), max(1, w-4-ansi.StringWidth(age)))
-		lines = append(lines, mark+st.Render(title)+"  "+styleDim.Render(age))
+		var current string
+		if s.ID == p.Current {
+			current = " ✓" // kept when the title is cut
+		}
+		room := max(1, w-4-ansi.StringWidth(age))
+		title := drawOneLine(s.Title)
+		if ansi.StringWidth(title+current) > room {
+			title = ansi.Truncate(title, max(1, room-ansi.StringWidth(current)), "…")
+		}
+		lines = append(lines, mark+st.Render(drawFit(title+current, room))+"  "+styleDim.Render(age))
 	}
 	return append(lines, "", styleDim.Render(ansi.Truncate("↑/↓ choose · enter resume · esc cancel", w, "…"))), hits
 }
@@ -385,9 +393,9 @@ func drawDetail(tool, detail string, w int) []string {
 			st := styleDim // context
 			switch {
 			case strings.HasPrefix(l, "-"):
-				st = styleErr
+				st = styleFg.Background(theme.RemovedBg)
 			case strings.HasPrefix(l, "+"):
-				st = styleOK
+				st = styleFg.Background(theme.AddedBg)
 			}
 			for _, piece := range drawWrap(l, w) {
 				out = append(out, st.Render(piece))

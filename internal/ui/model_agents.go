@@ -59,7 +59,7 @@ func (m *Model) agentByID(id string) *ide.Agent {
 
 // subagentNames name the subagents in the order they start; past the last, the names come round
 // again with a number.
-var subagentNames = []string{"Kevin", "Stuart", "Bob", "Dave", "Jerry", "Carl", "Phil", "Tim", "Mark", "Jorge", "Otto", "Norbert"}
+var subagentNames = []string{"kevin", "stuart", "bob", "dave", "jerry", "carl", "phil", "tim", "mark", "jorge", "otto", "norbert"}
 
 // addAgent registers a new agent with the sim. A subagent gets a name of its own.
 func (m *Model) addAgent(key string, kind ide.AgentKind, parent, name string) *ide.Agent {
@@ -98,6 +98,7 @@ func (m *Model) toolUse(ev protocol.ToolUse, now time.Time) {
 	m.crew.calls[ev.ID] = ev
 	m.Sim.ToolUse(key, ev.ID, ev.Name, ev.Input)
 	a.ToolCalls++
+	a.Model = cmp.Or(ev.Model, a.Model)
 }
 
 // metaName finds `name: '…'` in the `meta` object of a workflow script, before any nested object.
@@ -199,7 +200,7 @@ func (m *Model) workflowAgent(wf string, it protocol.WorkflowItem, now time.Time
 	if a == nil {
 		a = m.addAgent(key, ide.WorkflowAgent, wf, "")
 	}
-	a.Name = cmp.Or(it.Title, a.Name)
+	a.Name, a.Model = cmp.Or(it.Title, a.Name), cmp.Or(it.Model, a.Model)
 	a.Phase, a.Tokens, a.ToolCalls = it.PhaseTitle, it.Tokens, it.ToolCalls
 	switch {
 	case it.AgentID == "":
@@ -375,42 +376,77 @@ func (m *Model) sync() {
 	if w := m.windows[m.context.Model]; w > 0 {
 		m.Status.Context = float64(m.context.Tokens) / float64(w)
 	}
-	m.Status.Camera, m.Status.CameraColor = "", 0
-	a := m.Sim.FindAgent(st.Camera)
-	if a == nil || len(st.Agents) == 1 { // with main alone there is nothing to choose between
-		return
-	}
-	cam := "auto → " + a.Name
-	if st.Pinned {
-		cam = "pinned · " + a.Name
-	}
-	if a.Activity != "" {
-		cam += " (" + a.Activity + ")"
-	}
-	m.Status.Camera, m.Status.CameraColor = cam, a.Color
 }
 
-// usage formats the use of the rate-limit windows: "5h 9% · 7d 58% · fable 3%". A window past
-// its reset is left out, as in Claude Code: the next response reports it anew. A session that has
-// no windows (an API key) shows its cost instead: "$0.0123".
+// usage formats the use of the rate-limit windows, each with the time until it resets: "5h 9%
+// 4h12m · 7d 58% fable 3% 2d8h" (fable is a bucket of the week: it resets with it). A window at
+// its limit says until when ("5h limit until 13:30"), unless extra usage pays past it: then
+// "extra usage" ends the line. A window past its reset is left out, as in Claude Code: the next response
+// reports it anew. A session that has no windows (an API key) shows its cost instead: "$0.0123".
 func usage(l protocol.RateLimits, cost float64, now time.Time) string {
-	if l == (protocol.RateLimits{}) {
+	if l.Session == nil && l.Week == nil && l.Fable == nil {
 		if cost > 0 {
 			return fmt.Sprintf("$%.4f", cost)
 		}
 		return ""
 	}
+	paid := l.Overage == "allowed" || l.Overage == "allowed_warning"
 	var parts []string
+	extra := false
 	for _, w := range []struct {
 		name string
 		w    *protocol.Window
-	}{{"5h", l.Session}, {"7d", l.Week}, {"fable", l.Fable}} {
-		if w.w != nil && w.w.ResetsAt.After(now) {
+		with *protocol.Window // a bucket shown with it, before the reset
+	}{{"5h", l.Session, nil}, {"7d", l.Week, l.Fable}, {"fable", l.Fable, nil}} {
+		switch {
+		case w.w == nil || !w.w.ResetsAt.After(now):
+		case w.name == "fable" && l.Week != nil && l.Week.ResetsAt.After(now): // shown with the week
+		case w.w.Status == "rejected" && !paid:
+			parts = append(parts, w.name+" limit until "+clockTime(w.w.ResetsAt.In(now.Location()), now))
+		default:
+			extra = extra || w.w.Status == "rejected"
 			// Rounded first, so that 0.58 is 58% and not 57.
-			parts = append(parts, fmt.Sprintf("%s %d%%", w.name, int(math.Round(w.w.Used*1e4)/100)))
+			part := fmt.Sprintf("%s %d%%", w.name, int(math.Round(w.w.Used*1e4)/100))
+			if b := w.with; b != nil && b.ResetsAt.After(now) {
+				extra = extra || b.Status == "rejected"
+				part += fmt.Sprintf(" fable %d%%", int(math.Round(b.Used*1e4)/100))
+			}
+			parts = append(parts, part+" "+untilReset(w.w.ResetsAt.Sub(now)))
 		}
 	}
+	if extra {
+		parts = append(parts, drawExtraUsage)
+	}
 	return strings.Join(parts, " · ")
+}
+
+// untilReset is how long until a window resets: to the minute within a day, "42m", "4h6m", "4h";
+// to the hour past it, "3d4h", "3d".
+func untilReset(d time.Duration) string {
+	d = max(d, 0)
+	m := int(d.Round(time.Minute) / time.Minute)
+	if m < 60 {
+		return fmt.Sprintf("%dm", m)
+	}
+	n, unit, rest, restUnit := m/60, "h", m%60, "m"
+	if m >= 24*60 {
+		h := int(d.Round(time.Hour) / time.Hour)
+		n, unit, rest, restUnit = h/24, "d", h%24, "h"
+	}
+	s := fmt.Sprintf("%d%s", n, unit)
+	if rest > 0 {
+		s += fmt.Sprintf("%d%s", rest, restUnit)
+	}
+	return s
+}
+
+// clockTime is t as a clock shows it, "13:30", with its date before it when that is not now's:
+// "Oct 31 12:00".
+func clockTime(t, now time.Time) string {
+	if y, m, d := t.Date(); y == now.Year() && m == now.Month() && d == now.Day() {
+		return t.Format("15:04")
+	}
+	return t.Format("Jan 2 15:04")
 }
 
 // elapsed formats a running time for the status line: "7s", "1m05s", "1h02m".

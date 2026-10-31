@@ -87,8 +87,7 @@ func (s *Sim) command(sc *scene, cmd string, limit int) {
 	})
 	sc.add(enterPause, func() {
 		t.Print(part, t.Input)
-		t.Input, t.Running, t.Spinner = "", true, 0
-		l.runAt = l.clock
+		t.Input, t.Running, t.Spinner, t.RunAt = "", true, 0, l.clock
 	})
 	sc.score = scoreLook
 	sc.await(func(r result) {
@@ -99,18 +98,14 @@ func (s *Sim) command(sc *scene, cmd string, limit int) {
 		if noOutput.MatchString(strings.TrimSpace(out)) {
 			out = ""
 		}
-		lines := termLines(out)
+		lines := classify(cmd, termLines(out), r.isErr)
 		if limit > 0 && len(lines) > limit {
-			lines = append(lines[:limit:limit], fmt.Sprintf("… %d more lines", len(lines)-limit))
-		}
-		kind := ide.Output
-		if r.isErr {
-			kind = ide.ErrorOutput
+			lines = append(lines[:limit:limit], ide.TermLine{Kind: ide.Output, Text: fmt.Sprintf("… %d more lines", len(lines)-limit)})
 		}
 		sc.score = scoreShell
 		sc.paced(len(lines), outLo, outHi, outCap, func(i, j int) {
 			for _, l := range lines[i:j] {
-				t.Print(kind, l)
+				t.PrintLine(l)
 			}
 		})
 		sc.add(0, func() {

@@ -14,6 +14,12 @@ You need Claude Code installed as `claude` and logged in. Then, on macOS or Linu
 brew install pixelbender/tap/claudit
 ```
 
+Or with Go 1.27 or newer, into `$(go env GOPATH)/bin`:
+
+```sh
+go install github.com/pixelbender/claudit@latest
+```
+
 ## Run
 
 In your project:

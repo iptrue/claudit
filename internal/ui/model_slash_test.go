@@ -176,6 +176,19 @@ func TestModelElapsed(t *testing.T) {
 	}
 }
 
+// A reset is to the minute within a day, to the hour past it; no unit is padded, a zero one goes.
+func TestUntilReset(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		0: "0m", -time.Minute: "0m", 42 * time.Minute: "42m", 4*time.Hour + 6*time.Minute: "4h6m", 4 * time.Hour: "4h",
+		57*time.Hour + 6*time.Minute: "2d9h", 57*time.Hour + 40*time.Minute: "2d10h", 48 * time.Hour: "2d",
+		24*time.Hour - 20*time.Second: "1d",
+	} {
+		if got := untilReset(d); got != want {
+			t.Errorf("untilReset(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
 // The status shows the rate-limit windows claude reports, until each one resets. Without any
 // (an API key) it shows the cost.
 func TestModelLimits(t *testing.T) {
@@ -193,12 +206,33 @@ func TestModelLimits(t *testing.T) {
 		Week:    &protocol.Window{Used: 0.58, ResetsAt: modelT0.Add(48 * time.Hour)},
 		Fable:   &protocol.Window{Used: 1.2, ResetsAt: modelT0.Add(48 * time.Hour)},
 	})
-	if want := "5h 9% · 7d 58% · fable 120%"; m.Status.Usage != want {
+	if want := "5h 9% 1h · 7d 58% fable 120% 2d"; m.Status.Usage != want { // fable shares the week's reset
 		t.Errorf("limits %q, want %q", m.Status.Usage, want)
 	}
 	m.Update(tickMsg(modelT0.Add(time.Hour)))
-	if want := "7d 58% · fable 120%"; m.Status.Usage != want {
+	if want := "7d 58% fable 120% 1d23h"; m.Status.Usage != want {
 		t.Errorf("limits %q after the 5-hour reset, want %q", m.Status.Usage, want)
+	}
+}
+
+// A window at its limit says until when, unless extra usage pays past it; the windows go with the
+// usage, for its colours.
+func TestModelLimitReached(t *testing.T) {
+	m, _ := modelNew(t, false)
+	m.Update(tickMsg(modelT0))
+	session := &protocol.Window{Used: 1, ResetsAt: modelT0.Add(90 * time.Minute), Status: "rejected"}
+	week := &protocol.Window{Used: 0.8, ResetsAt: modelT0.Add(48 * time.Hour), Status: "allowed_warning"}
+	modelEvents(m, protocol.RateLimits{Session: session, Week: week, Overage: "rejected"})
+	if want := "5h limit until 13:30 · 7d 80% 2d"; m.Status.Usage != want {
+		t.Errorf("limits %q, want %q", m.Status.Usage, want)
+	}
+	modelEvents(m, protocol.RateLimits{Session: session, Week: week, Overage: "allowed"})
+	if want := "5h 100% 1h30m · 7d 80% 2d · extra usage"; m.Status.Usage != want {
+		t.Errorf("limits %q, want %q", m.Status.Usage, want)
+	}
+	modelEvents(m, protocol.RateLimits{Week: &protocol.Window{Used: 1, ResetsAt: modelT0.Add(48 * time.Hour), Status: "rejected"}})
+	if want := "7d limit until Oct 31 12:00"; m.Status.Usage != want {
+		t.Errorf("limits %q, want %q", m.Status.Usage, want)
 	}
 }
 
@@ -250,6 +284,10 @@ func TestModelSlashDescriptions(t *testing.T) {
 func TestModelAnimating(t *testing.T) {
 	m, _ := modelNew(t, false)
 	m.Update(tickMsg(modelT0))
+	if !m.animating() {
+		t.Error("the spinner while claude starts does not get frames")
+	}
+	m.Status.State = "idle"
 	if m.animating() {
 		t.Error("ticking for an empty editor")
 	}
@@ -264,17 +302,17 @@ func TestModelAnimating(t *testing.T) {
 	}
 }
 
-// An error the CLI already said in the conversation is not repeated.
+// Errors go to the status, not the chat: what the CLI says otherwise stays in the chat.
 func TestModelErrorOnce(t *testing.T) {
 	m, _ := modelNew(t, false)
 	modelEvents(m, protocol.CLIReply{Text: "API Error: 529 overloaded"},
 		protocol.Result{IsError: true, Text: "API Error: 529 overloaded"})
-	if len(m.Chat) != 1 {
-		t.Errorf("chat %+v", m.Chat)
+	if len(m.Chat) != 0 || m.Status.State != "API error 529 · overloaded" {
+		t.Errorf("chat %+v state %q", m.Chat, m.Status.State)
 	}
-	modelEvents(m, protocol.Result{IsError: true, Text: "error_max_turns"})
-	if n := len(m.Chat); n != 2 || m.Chat[n-1].Text != "error_max_turns" {
-		t.Errorf("a new error is not in the chat: %+v", m.Chat)
+	modelEvents(m, protocol.CLIReply{Text: "Total cost: $0.01"})
+	if len(m.Chat) != 1 {
+		t.Errorf("a command's output is not in the chat: %+v", m.Chat)
 	}
 }
 
@@ -309,14 +347,14 @@ func TestModelNotice(t *testing.T) {
 	}
 	m.Popup = nil
 	m.Update(tea.BlurMsg{})
-	if s := ring(protocol.PermissionRequest{RequestID: "p2", ToolName: "Bash", Input: map[string]any{"command": "ls"}}); s != "\a\x1b]9;claude wants to use Bash\x07" {
+	if s := ring(protocol.PermissionRequest{RequestID: "p2", ToolName: "Bash", Input: map[string]any{"command": "ls"}}); s != "\x1b]9;claude wants to use Bash\x07" {
 		t.Errorf("popup notice %q", s)
 	}
 	m.Status.Busy, m.Status.Elapsed = true, "1m 05s"
-	if s := ring(protocol.Result{}); s != "\a\x1b]9;claude is done · 1m 05s\x07" {
+	if s := ring(protocol.Result{}); s != "\x1b]9;claude is done · 1m 05s\x07" {
 		t.Errorf("done notice %q", s)
 	}
-	if s := ring(protocol.Result{IsError: true, Text: "API Error:\x1b[31m 529"}); s != "\a\x1b]9;claude stopped: API Error: 529\x07" {
+	if s := ring(protocol.Result{IsError: true, Text: "API Error:\x1b[31m 529"}); s != "\x1b]9;claude stopped: API Error: 529\x07" {
 		t.Errorf("error notice %q", s)
 	}
 	m.Update(tea.FocusMsg{})

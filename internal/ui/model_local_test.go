@@ -110,8 +110,9 @@ func TestModelSlashPickers(t *testing.T) {
 
 	*sent = nil
 	m.Status.Busy = false
+	m.Status.Effort = "medium"
 	modelLocalSay(m, "/effort")
-	if p, ok := m.Popup.(*PickPopup); !ok || !reflect.DeepEqual(modelLocalLabels(p), []string{"low", "medium", "auto"}) {
+	if p, ok := m.Popup.(*PickPopup); !ok || !reflect.DeepEqual(modelLocalLabels(p), []string{"low", "medium", "auto"}) || p.Current != 1 {
 		t.Errorf("/effort: %#v", m.Popup)
 	}
 	modelPress(m, inputKey("esc"))

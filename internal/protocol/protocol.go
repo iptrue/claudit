@@ -24,6 +24,7 @@ type Init struct {
 	PermissionMode string
 	OutputStyle    string
 	Version        string      // of the CLI
+	Effort         string      // "low" … "max"; "" for a model without efforts
 	Commands       []string    // slash commands the session runs, without "/"
 	MCP            []MCPServer // the MCP servers and how they are doing
 }
@@ -66,6 +67,21 @@ type ModelChanged struct{ Model string }
 // ControlError: the CLI refused a control request of ours, e.g. a SetMode to a mode it cannot enter.
 type ControlError struct{ RequestID, Message string }
 
+// APIRetry: an API call of the turn failed and goes again after Delay, as try Attempt of MaxRetries.
+// Status is the HTTP status that failed it (529: overloaded); 0 for a connection error.
+type APIRetry struct {
+	Attempt, MaxRetries int
+	Delay               time.Duration
+	Status              int
+}
+
+// ModelFallback: the turn runs on To from here on, because From failed it (Trigger: "overloaded",
+// "server_error", "model_not_found", …). Text says so for the user. The next turn tries From again.
+type ModelFallback struct{ From, To, Trigger, Text string }
+
+// Compacting: the CLI is summarizing the conversation to free its context (On), or done with it.
+type Compacting struct{ On bool }
+
 // SideAnswer answers a SideQuestion.
 type SideAnswer struct{ RequestID, Text string }
 
@@ -95,6 +111,7 @@ type ToolUse struct {
 	Name   string
 	Input  map[string]any
 	Parent string
+	Model  string // the model that made the call, when the message names it
 }
 
 // ToolResult is the outcome of the ToolUse with the same ID.
@@ -167,6 +184,17 @@ type Result struct {
 	CostUSD        float64
 	DurationMS     int64
 	ContextWindows map[string]int // the context window of each model the session used, by model id
+	// Usage is what the process has taken so far, of every model, subagents' too; with --resume it
+	// starts from what the conversation's last process took. Turn is this turn's, main's calls alone.
+	Usage, Turn Usage
+}
+
+// Usage counts tokens by what they are.
+type Usage struct {
+	Input      int // read anew, not cached
+	Output     int // written by the model
+	CacheRead  int // read again from the cache, on every call
+	CacheWrite int // put in the cache
 }
 
 // RateLimits is how much of the subscription's rate-limit windows is used, as the headers of the
@@ -175,12 +203,14 @@ type RateLimits struct {
 	Session *Window // five_hour
 	Week    *Window // seven_day
 	Fable   *Window // seven_day_overage_included: the weekly bucket of Fable
+	Overage string  // extra usage: "allowed" or "allowed_warning" when it pays past a limit, "rejected" when not
 }
 
 // Window is one rate-limit window.
 type Window struct {
 	Used     float64 // fraction of the window used; can pass 1
 	ResetsAt time.Time
+	Status   string // "allowed", "allowed_warning" (on course for the limit), "rejected" (at it); "" when not told
 }
 
 // Stderr is one line the process wrote to stderr.
@@ -193,6 +223,9 @@ func (Init) isEvent()              {}
 func (ModeChanged) isEvent()       {}
 func (ModelChanged) isEvent()      {}
 func (ControlError) isEvent()      {}
+func (APIRetry) isEvent()          {}
+func (ModelFallback) isEvent()     {}
+func (Compacting) isEvent()        {}
 func (SideAnswer) isEvent()        {}
 func (Reset) isEvent()             {}
 func (Commands) isEvent()          {}
@@ -337,8 +370,42 @@ func parseSystem(line []byte) []Event {
 		return parseTaskProgress(line)
 	case "task_notification", "task_updated":
 		return parseTaskDone(line)
+	case "api_retry":
+		return parseAPIRetry(line)
+	case "model_fallback":
+		return parseModelFallback(line)
 	}
 	return nil
+}
+
+func parseAPIRetry(line []byte) []Event {
+	var m struct {
+		Attempt    int     `json:"attempt"`
+		MaxRetries int     `json:"max_retries"`
+		DelayMS    float64 `json:"retry_delay_ms"`
+		Status     *int    `json:"error_status"` // null for a connection error
+	}
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	ev := APIRetry{Attempt: m.Attempt, MaxRetries: m.MaxRetries, Delay: time.Duration(m.DelayMS) * time.Millisecond}
+	if m.Status != nil {
+		ev.Status = *m.Status
+	}
+	return []Event{ev}
+}
+
+func parseModelFallback(line []byte) []Event {
+	var m struct {
+		From    string `json:"original_model"`
+		To      string `json:"fallback_model"`
+		Trigger string `json:"trigger"`
+		Text    string `json:"content"`
+	}
+	if json.Unmarshal(line, &m) != nil || m.To == "" {
+		return nil
+	}
+	return []Event{ModelFallback{From: m.From, To: m.To, Trigger: m.Trigger, Text: m.Text}}
 }
 
 func parseInit(line []byte) []Event {
@@ -349,6 +416,7 @@ func parseInit(line []byte) []Event {
 		PermissionMode string      `json:"permissionMode"`
 		OutputStyle    string      `json:"output_style"`
 		Version        string      `json:"claude_code_version"`
+		Effort         string      `json:"effort"`
 		Commands       []string    `json:"slash_commands"`
 		MCP            []MCPServer `json:"mcp_servers"`
 	}
@@ -356,18 +424,31 @@ func parseInit(line []byte) []Event {
 		return nil
 	}
 	return []Event{Init{SessionID: m.SessionID, Model: m.Model, Cwd: m.Cwd, PermissionMode: m.PermissionMode,
-		OutputStyle: m.OutputStyle, Version: m.Version, Commands: m.Commands, MCP: m.MCP}}
+		OutputStyle: m.OutputStyle, Version: m.Version, Effort: m.Effort, Commands: m.Commands, MCP: m.MCP}}
 }
 
-// parseStatus reports a permission mode change; other status lines ("requesting", …) yield nothing.
+// parseStatus reports a permission mode change, and a compaction starting ("compacting") or ending
+// (with its compact_result); other status lines ("requesting", …) yield nothing.
 func parseStatus(line []byte) []Event {
 	var m struct {
+		Status         string `json:"status"`
 		PermissionMode string `json:"permissionMode"`
+		CompactResult  string `json:"compact_result"`
 	}
-	if json.Unmarshal(line, &m) != nil || m.PermissionMode == "" {
+	if json.Unmarshal(line, &m) != nil {
 		return nil
 	}
-	return []Event{ModeChanged{Mode: m.PermissionMode}}
+	var evs []Event
+	if m.PermissionMode != "" {
+		evs = append(evs, ModeChanged{Mode: m.PermissionMode})
+	}
+	switch {
+	case m.Status == "compacting":
+		evs = append(evs, Compacting{On: true})
+	case m.CompactResult != "":
+		evs = append(evs, Compacting{On: false})
+	}
+	return evs
 }
 
 func parseTaskStarted(line []byte) []Event {
@@ -528,7 +609,7 @@ func parseAssistant(line []byte) []Event {
 	for _, c := range m.Message.Content {
 		switch {
 		case c.Type == "tool_use":
-			evs = append(evs, ToolUse{ID: c.ID, Name: c.Name, Input: c.Input, Parent: m.Parent})
+			evs = append(evs, ToolUse{ID: c.ID, Name: c.Name, Input: c.Input, Parent: m.Parent, Model: m.Message.Model})
 		case c.Type == "text" && synthetic && c.Text != "":
 			evs = append(evs, CLIReply{Text: c.Text})
 		}
@@ -682,15 +763,28 @@ func parseResult(line []byte) []Event {
 		Errors     []string `json:"errors"`
 		CostUSD    float64  `json:"total_cost_usd"`
 		DurationMS float64  `json:"duration_ms"`
+		Usage      struct {
+			Input         int `json:"input_tokens"`
+			Output        int `json:"output_tokens"`
+			CacheRead     int `json:"cache_read_input_tokens"`
+			CacheCreation int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
 		ModelUsage map[string]struct {
 			ContextWindow int `json:"contextWindow"`
+			Input         int `json:"inputTokens"`
+			Output        int `json:"outputTokens"`
+			CacheRead     int `json:"cacheReadInputTokens"`
+			CacheCreation int `json:"cacheCreationInputTokens"`
 		} `json:"modelUsage"`
 	}
 	if json.Unmarshal(line, &m) != nil {
 		return nil
 	}
 	var windows map[string]int
+	var all Usage
 	for model, u := range m.ModelUsage {
+		all.Input, all.Output = all.Input+u.Input, all.Output+u.Output
+		all.CacheRead, all.CacheWrite = all.CacheRead+u.CacheRead, all.CacheWrite+u.CacheCreation
 		if u.ContextWindow > 0 {
 			if windows == nil {
 				windows = map[string]int{}
@@ -705,16 +799,20 @@ func parseResult(line []byte) []Event {
 	if text == "" {
 		text = m.Subtype
 	}
-	return []Event{Result{IsError: m.IsError, Text: text, CostUSD: m.CostUSD, DurationMS: int64(m.DurationMS), ContextWindows: windows}}
+	u := m.Usage
+	turn := Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheCreation}
+	return []Event{Result{IsError: m.IsError, Text: text, CostUSD: m.CostUSD, DurationMS: int64(m.DurationMS), ContextWindows: windows, Usage: all, Turn: turn}}
 }
 
 func parseRateLimits(line []byte) []Event {
 	type window struct {
 		Utilization float64 `json:"utilization"`
 		ResetsAt    int64   `json:"resetsAt"`
+		Status      string  `json:"status"`
 	}
 	var m struct {
 		Info struct {
+			Overage string `json:"overageStatus"`
 			Windows struct {
 				FiveHour *window `json:"five_hour"`
 				SevenDay *window `json:"seven_day"`
@@ -729,11 +827,11 @@ func parseRateLimits(line []byte) []Event {
 		if w == nil {
 			return nil
 		}
-		return &Window{Used: w.Utilization, ResetsAt: time.Unix(w.ResetsAt, 0)}
+		return &Window{Used: w.Utilization, ResetsAt: time.Unix(w.ResetsAt, 0), Status: w.Status}
 	}
 	w := m.Info.Windows
-	ev := RateLimits{Session: conv(w.FiveHour), Week: conv(w.SevenDay), Fable: conv(w.Fable)}
-	if ev == (RateLimits{}) {
+	ev := RateLimits{Session: conv(w.FiveHour), Week: conv(w.SevenDay), Fable: conv(w.Fable), Overage: m.Info.Overage}
+	if ev.Session == nil && ev.Week == nil && ev.Fable == nil {
 		return nil
 	}
 	return []Event{ev}

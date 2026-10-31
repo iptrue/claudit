@@ -301,6 +301,23 @@ func paint(line string, l *language) string {
 	return paintRunes(rs, highlight(rs, l), nil)
 }
 
+// paintOn colours one clean line by the syntax of language l (nil: plain) on background bg: a diff's
+// change keeps the colours of its code.
+func paintOn(line string, l *language, bg color.Color) string {
+	rs := []rune(line)
+	kinds := highlight(rs, l)
+	var b strings.Builder
+	for i := 0; i < len(rs); {
+		j := i + 1
+		for j < len(rs) && kinds[j] == kinds[i] {
+			j++
+		}
+		b.WriteString(style{kind: kinds[i], bg: bg}.render(string(rs[i:j])))
+		i = j
+	}
+	return b.String()
+}
+
 // paintRunes draws rs in the colours of their kinds; a colour in fg, when there is one, replaces
 // that of its rune.
 func paintRunes(rs []rune, kinds []kind, fg []color.Color) string {

@@ -101,8 +101,7 @@ type mark struct {
 	pos      ide.Pos
 	from, to ide.Pos // its selection; empty when from == to
 	color    color.Color
-	tint     color.Color // background of its selection
-	spin     bool        // its agent works: the caret shows
+	spin     bool // its agent works: the caret shows
 }
 
 // lineCaret is a caret on the line being drawn.
@@ -133,22 +132,22 @@ func editorBody(st *ide.State, cam *ide.Agent, tab *ide.Tab, o Options, iw, ih i
 			continue // it has finished and played everything: no longer at work here
 		}
 		m := mark{pos: c.Pos, color: agentColor(a), spin: a != nil && working(a, o)}
-		m.tint = lipgloss.Darken(m.color, 0.6)
 		if c.Sel != nil {
 			m.from, m.to = order(c.Sel.From, c.Sel.To)
 		}
 		others = append(others, m)
 	}
 
-	// selBg is the background of the cell at p when a selection covers it: the camera's, else
-	// another agent's; nil otherwise.
+	// selBg is the background of the cell at p when a selection covers it, the camera's or another
+	// agent's: red, as a diff's removed lines, for an agent selects only what it deletes; nil
+	// otherwise.
 	selBg := func(p ide.Pos) color.Color {
 		if !less(p, from) && less(p, to) {
-			return theme.SelBg
+			return theme.RemovedBg
 		}
 		for _, m := range others {
 			if !less(p, m.from) && less(p, m.to) {
-				return m.tint
+				return theme.RemovedBg
 			}
 		}
 		return nil
@@ -171,7 +170,7 @@ func editorBody(st *ide.State, cam *ide.Agent, tab *ide.Tab, o Options, iw, ih i
 
 	// A caret is a spin frame while its agent works, else none.
 	spin, frame := focused && working(cam, o), spinFrame(o.Now)
-	// The newest glow of each line, in its agent's colour.
+	// The newest glow of each line.
 	glows := map[int]ide.Glow{}
 	for _, g := range tab.Buf.Glow {
 		if old, ok := glows[g.Line]; !ok || g.At.After(old.At) {
@@ -201,7 +200,7 @@ func editorBody(st *ide.State, cam *ide.Agent, tab *ide.Tab, o Options, iw, ih i
 			bg = theme.LineBg
 		}
 		if g, ok := glows[ln]; ok {
-			if lit := glow(g, o.Now, agentColor(findAgent(st, g.Agent))); lit != nil {
+			if lit := glow(g, o.Now); lit != nil {
 				bg = lit
 			}
 		}

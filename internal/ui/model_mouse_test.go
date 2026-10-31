@@ -201,7 +201,7 @@ func TestModelMouseClickPanel(t *testing.T) {
 		protocol.ToolUse{ID: "s1", Name: "Agent", Input: map[string]any{"description": "alpha"}},
 		protocol.ToolUse{ID: "s2", Name: "Agent", Input: map[string]any{"description": "beta"}},
 	)
-	modelMouseClick(t, m, "Stuart")
+	modelMouseClick(t, m, "stuart")
 	if st := m.Sim.State(); m.PanelSel != "s2" || st.Camera != "s2" || !st.Pinned {
 		t.Errorf("sel %q camera %q pinned %v", m.PanelSel, st.Camera, st.Pinned)
 	}

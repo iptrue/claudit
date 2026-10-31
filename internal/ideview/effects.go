@@ -49,9 +49,9 @@ const glowLife = 2 * time.Second
 // glowHold is how lit a typed line stays after its flash, while its agent is on that tool call.
 const glowHold = 0.16
 
-// glow is the background of a line g lights in an agent's colour c: a flash that settles to a
-// steady light, which fades once the agent moves on; nil when unlit.
-func glow(g ide.Glow, now time.Time, c color.Color) color.Color {
+// glow is the background of a line g lights green, as a diff's added lines: a flash that settles
+// to a steady light, which fades once its agent moves on; nil when unlit.
+func glow(g ide.Glow, now time.Time) color.Color {
 	fade := func(from time.Time) float64 {
 		k := max(1-float64(max(now.Sub(from), 0))/float64(glowLife), 0)
 		return k * k
@@ -63,7 +63,7 @@ func glow(g ide.Glow, now time.Time, c color.Color) color.Color {
 	if f = max(f, 0.42*fade(g.At)); f < 0.42*0.06 {
 		return nil
 	}
-	return theme.Mix(theme.Bg, c, f)
+	return theme.Mix(theme.Bg, theme.Green, f)
 }
 
 // Cutting reports whether the right column is wiping in at now.
@@ -157,30 +157,61 @@ func splash(w, h int) []string {
 }
 
 var (
-	okLine   = regexp.MustCompile(`(?i)(^ok\b|\bpass(ed)?\b|\bsuccess|✓|\ball tests passed\b|^exit=0$)`)
-	errLine  = regexp.MustCompile(`(?i)(\bfail(ed|ure)?\b|\berror\b|\bpanic\b|traceback|✗|exception\b|^exit=[1-9])`)
-	warnLine = regexp.MustCompile(`(?i)\bwarn(ing)?\b`)
+	okLine   = regexp.MustCompile(`(?i)(^ok\b|\bpass(ed|es)?\b|\bsuccess|✓|\ball tests passed\b|^exit=0$)`)
+	errLine  = regexp.MustCompile(`(?i)(\bfail(s|ed|ures?)?\b|\berrors?\b|\w+error:|\bpanic\b|traceback|✗|exception\b|^exit=[1-9])`)
+	warnLine = regexp.MustCompile(`(?i)warn(ings?)?\b`) // DeprecationWarning too
+	// noneLine is a count of none: "0 errors", "no failures", "Errors: 0" say nothing went wrong.
+	noneLine = regexp.MustCompile(`(?i)\b(0|no|zero)\s+(errors?|failures?|failed|problems?|warnings?)\b|\b(errors?|failures?|failed|problems?|warnings?):\s*0\b`)
+	// diagLine is a compiler's or a linter's word on a line and column of a file: "./calc.go:12:2:
+	// undefined: x"; a test's log has no column.
+	diagLine = regexp.MustCompile(`^[^\s:]*[./][^\s:]*:\d+:\d+: `)
 )
 
-// outputStyle colours a line of command output by what it says: passes green, failures red,
-// warnings yellow, diff lines by their sign. ok is false for a line that says none of these.
+// outputStyle colours a line of command output by what it says: passes green, failures and a
+// compiler's complaints red, warnings yellow. ok is false for a line that says none of these.
 func outputStyle(line string) (st lipgloss.Style, ok bool) {
-	t := strings.TrimSpace(line)
+	t := noneLine.ReplaceAllString(strings.TrimSpace(line), "")
 	switch {
 	case errLine.MatchString(t):
 		return errStyle, true
 	case warnLine.MatchString(t):
 		return lipgloss.NewStyle().Foreground(theme.Warn), true
+	case diagLine.MatchString(t):
+		return errStyle, true
 	case okLine.MatchString(t):
 		return okStyle, true
-	case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
-		return okStyle, true
-	case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
-		return errStyle, true
-	case strings.HasPrefix(line, "@@"):
-		return lipgloss.NewStyle().Foreground(theme.Violet), true
 	}
 	return fgStyle, false
+}
+
+// codeLine draws text, a row of the line l of code, as the editor draws its file's language; in
+// a file of no language it knows, as plain output.
+func codeLine(st *ide.State, text string, l *ide.TermLine) string {
+	if lang := langOf(l.Lang); lang != nil {
+		return paint(text, lang)
+	}
+	return outputLine(st, text, l.Text)
+}
+
+// hitLine draws text, a row of the search hit l: on its first row where the hit is, the file in its
+// explorer colour and the line number grey; then the hit's line as the editor draws its code, or
+// in a file of no language it knows, as plain output.
+func hitLine(st *ide.State, text string, first bool, l *ide.TermLine) string {
+	var at string
+	if first {
+		rs := []rune(text)
+		n := min(l.Prefix, len(rs))
+		at, text = string(rs[:n]), string(rs[n:])
+		if name, ok := strings.CutPrefix(at, l.Lang); ok && l.Lang != "" {
+			at = lipgloss.NewStyle().Foreground(fileTint(l.Lang)).Render(l.Lang) + dimStyle.Render(name)
+		} else {
+			at = dimStyle.Render(at)
+		}
+	}
+	if lang := langOf(l.Lang); lang != nil {
+		return at + paint(text, lang)
+	}
+	return at + outputLine(st, text, text)
 }
 
 // outLang is what command output has of a language: numbers, quoted strings, constants, calls.

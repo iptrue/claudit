@@ -61,6 +61,7 @@ type Agent struct {
 	Phase     string // workflow phase title (WorkflowAgent)
 	Status    AgentStatus
 	Activity  string // what it is doing now, e.g. "Edit calc.py"; "" when idle
+	Model     string // the model it runs, e.g. "claude-haiku-5-5"; "" until known
 	Tokens    int
 	ToolCalls int
 	Started   time.Time
@@ -102,8 +103,8 @@ type Buffer struct {
 	Glow     []Glow            // lines agents typed: lit until their agent moves on, then fading out
 }
 
-// Glow marks a line an agent typed: the view flashes it in the agent's colour, keeps it lit while
-// the agent is still on that tool call, and lets it fade once the agent moves on.
+// Glow marks a line an agent typed: the view flashes it green, keeps it lit while the agent is
+// still on that tool call, and lets it fade once the agent moves on.
 type Glow struct {
 	Line  int
 	Agent string
@@ -123,15 +124,18 @@ type Selection struct{ From, To Pos }
 // Term is a simulated terminal.
 type Term struct {
 	Lines   []TermLine
-	Input   string // command typed so far on the live prompt line
-	Running bool   // a command is executing: the live prompt line is replaced by a spinner
-	Spinner int    // spinner frame
+	Input   string    // command typed so far on the live prompt line
+	Running bool      // a command is executing: the live prompt line is replaced by a spinner
+	Spinner int       // spinner frame
+	RunAt   time.Time // when the running command started
 }
 
 // TermLine is one line of terminal scrollback.
 type TermLine struct {
-	Kind LineKind
-	Text string // for Command: the command alone, without the prompt
+	Kind   LineKind
+	Text   string // for Command: the command alone, without the prompt
+	Lang   string // for Code, Match, Added and Removed: the file whose language the code is in
+	Prefix int    // for Match: the runes of where the hit is ("path:12:") before its code
 }
 
 type LineKind int
@@ -140,8 +144,14 @@ const (
 	Command LineKind = iota
 	Output
 	ErrorOutput
-	Gap  // the blank line between a command's output and the next prompt
-	More // a command's line after its first: no prompt of its own
+	Gap     // the blank line between a command's output and the next prompt
+	More    // a command's line after its first: no prompt of its own
+	Code    // output that is the text of a file, or the lines around a diff's change
+	Match   // a search's hit: where it is, then its line of code
+	Added   // a diff's added line
+	Removed // a diff's removed line
+	Hunk    // a diff's "@@ -1,2 +1,3 @@"
+	Meta    // a diff's or a log's header: "diff --git …", "index …", "commit …"
 )
 
 // Page is what an agent's browser shows: the address it fetched, or the query it searched for,

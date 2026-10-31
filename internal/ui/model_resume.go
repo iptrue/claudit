@@ -66,19 +66,20 @@ func (m *Model) listed(msg sessionsMsg) tea.Cmd {
 	}
 	q := strings.ToLower(msg.query)
 	list := slices.DeleteFunc(msg.list, func(s sessions.Info) bool {
-		return s.ID == m.session || !strings.HasPrefix(s.ID, q) && !strings.Contains(strings.ToLower(s.Title), q)
+		return !strings.HasPrefix(s.ID, q) && !strings.Contains(strings.ToLower(s.Title), q)
 	})
+	other := slices.IndexFunc(list, func(s sessions.Info) bool { return s.ID != m.session })
 	switch {
 	case m.Popup != nil: // claude asked meanwhile: its question goes first
 		m.local("/resume: answer claude first")
 	case len(list) == 0 && q != "":
 		m.local(fmt.Sprintf("/resume: no conversation matches %q", msg.query))
-	case len(list) == 0:
+	case other < 0 && q == "":
 		m.local("/resume: no other conversation in this project")
 	case len(list) == 1 && q != "":
 		return m.pick(list[0])
 	default:
-		m.Popup = &ResumePopup{Sessions: list, Now: m.Now}
+		m.Popup = &ResumePopup{Sessions: list, Current: m.session, Cursor: max(other, 0), Now: m.Now}
 	}
 	return nil
 }
@@ -110,8 +111,12 @@ func (m *Model) closeResume() {
 	}
 }
 
-// pick reads what was said in s.
+// pick reads what was said in s; the conversation claude is in already stays as it is.
 func (m *Model) pick(s sessions.Info) tea.Cmd {
+	if s.ID == m.session {
+		m.local("/resume: already in this conversation")
+		return nil
+	}
 	dir := sessions.Dir(m.Sim.State().Root)
 	return func() tea.Msg {
 		h, err := sessions.History(dir, s.ID)
@@ -156,7 +161,7 @@ func (m *Model) resumed(msg historyMsg) {
 		}
 		m.Chat = append(m.Chat, e)
 	}
-	m.context, m.cost, m.session = protocol.Context{}, 0, msg.info.ID
-	m.Status.State = "starting" // until the new process answers
+	m.context, m.cost, m.usageKnown, m.session = protocol.Context{}, 0, false, msg.info.ID // a new process counts anew
+	m.Status.State = "starting"                                                            // until the new process answers
 	m.local("Resumed: " + msg.info.Title)
 }

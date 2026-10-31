@@ -106,12 +106,16 @@ func agentsView(st *ide.State, cam *ide.Agent, o Options, ih int) ([]treeRow, in
 func agentsPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	iw, ih := inner(w, h)
 	tree, top := agentsView(st, cam, o, ih)
+	var main string // main's model, which the other agents' are told against
+	if len(st.Agents) > 0 {
+		main = st.Agents[0].Model
+	}
 	rows := make([]string, ih)
 	for i := range rows {
 		if top+i >= len(tree) {
 			break
 		}
-		rows[i] = " " + agentRow(tree[top+i], cam, o, textWidth(iw))
+		rows[i] = " " + agentRow(tree[top+i], cam, main, o, textWidth(iw))
 	}
 	mode := "auto"
 	if st.Pinned {
@@ -126,9 +130,9 @@ func agentsPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 }
 
 // agentRow draws one line of the agents tree, w cells wide: the hotkey in a gutter, then the
-// indented status and name, the camera mark, the activity, and the duration at the right edge.
-// The tree tells the agent's kind.
-func agentRow(r treeRow, cam *ide.Agent, o Options, w int) string {
+// indented status and name, the camera mark, and at the right edge the model when it is not
+// main's, and the duration. The tree tells the agent's kind; what it does shows in its workplace.
+func agentRow(r treeRow, cam *ide.Agent, main string, o Options, w int) string {
 	indent := strings.Repeat(" ", 2*r.depth)
 	a := r.agent
 	if a == nil {
@@ -158,17 +162,28 @@ func agentRow(r treeRow, cam *ide.Agent, o Options, w int) string {
 	}
 	name := clip(a.Name, room, "…")
 	room -= ansi.StringWidth(name)
-	var act string
-	if a.Activity != "" && room > 1 {
-		act = " " + clip(a.Activity, room-1, "…")
+	var model string
+	if f := family(a.Model); a.Kind != ide.Main && f != "" && f != family(main) && room > len(f) {
+		model = " " + f
+		room -= len(model)
 	}
-	room -= ansi.StringWidth(act)
 	if dur != "" {
 		dur = " " + dur
 	}
 	return base.Foreground(theme.Dim).Render(hot) + base.Render(" "+indent) + base.Foreground(gc).Render(glyph) + base.Render(" ") +
 		nameStyle.Render(name) + base.Foreground(agentColor(a)).Render(camMark) +
-		base.Foreground(theme.Dim).Render(act+strings.Repeat(" ", max(0, room))+dur)
+		base.Foreground(theme.Dim).Render(strings.Repeat(" ", max(0, room))+model+dur)
+}
+
+// family is the short name of a model: "haiku" for "claude-haiku-5-5", the id without "claude-"
+// for one of no known family; "" for none.
+func family(model string) string {
+	for _, f := range []string{"opus", "sonnet", "haiku", "fable"} {
+		if strings.Contains(model, f) {
+			return f
+		}
+	}
+	return strings.TrimPrefix(model, "claude-")
 }
 
 // phaseRow is a phase header: its title, and a bar of its agents finished of all when it fits.

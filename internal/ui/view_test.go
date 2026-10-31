@@ -163,7 +163,6 @@ func TestViewKeycap(t *testing.T) {
 	for w := 40; w <= 120; w++ {
 		m := drawTestModel(t, w, 24)
 		m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, Text: label}, ChatEntry{Kind: UserEntry, Text: label})
-		m.Status.Camera = "pinned · " + label + " (" + label + ")"
 		m.Popup = &QuestionPopup{AgentName: label, Questions: []Question{{
 			Text:    label,
 			Options: []Option{{Label: label, Description: label}, {Label: "2️⃣"}},
@@ -211,7 +210,6 @@ func drawTestAgents(m *Model) {
 	a := m.Sim.Agent("toolu_sub", ide.Subagent)
 	a.Name = "tests"
 	m.Now = t0.Add(30 * time.Second)
-	m.Status.Camera, m.Status.CameraColor = "auto → tests", a.Color
 }
 
 func TestViewModes(t *testing.T) {
@@ -227,7 +225,7 @@ func TestViewModes(t *testing.T) {
 			if (v.Cursor != nil) != (m.Popup == nil && !m.PanelFocus) {
 				t.Errorf("%s %dx%d: cursor %v", mode.name, w, h, v.Cursor)
 			}
-			if w >= 80 && !strings.Contains(lines[h-1], "cam auto → tests") {
+			if w >= 80 && strings.Contains(lines[h-1], "cam ") { // the agents panel tells the camera
 				t.Errorf("%s %dx%d: status %q", mode.name, w, h, lines[h-1])
 			}
 		}

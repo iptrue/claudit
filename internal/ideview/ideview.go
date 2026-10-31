@@ -5,6 +5,7 @@
 package ideview
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -29,6 +30,7 @@ var (
 	limeStyle = lipgloss.NewStyle().Foreground(theme.Lime)
 	cmdStyle  = lipgloss.NewStyle().Foreground(theme.Bright) // what is typed in a terminal
 	errStyle  = lipgloss.NewStyle().Foreground(theme.Err)
+	hunkStyle = lipgloss.NewStyle().Foreground(theme.Violet) // a diff's "@@ -1,2 +1,3 @@"
 
 	spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 )
@@ -291,6 +293,9 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 		}
 	}
 	live := fgStyle.Render(spinner[t.Spinner%len(spinner)])
+	if ran := runTime(t, o.Now); ran != "" { // claude brings the output only once the command is over
+		live += " " + dimStyle.Render(ran)
+	}
 	if !t.Running {
 		var c string
 		if working(cam, o) { // the caret is a spin frame while its agent works, else none; lime as the prompt
@@ -317,6 +322,20 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 			}
 		case r.line.Kind == ide.ErrorOutput:
 			text = errStyle.Render(text)
+		case r.line.Kind == ide.Added:
+			text = paintOn(text, langOf(r.line.Lang), theme.AddedBg)
+		case r.line.Kind == ide.Removed:
+			text = paintOn(text, langOf(r.line.Lang), theme.RemovedBg)
+		case r.line.Kind == ide.Hunk:
+			text = hunkStyle.Render(text)
+		case r.line.Kind == ide.Meta && (strings.HasPrefix(r.line.Text, "diff ") || strings.HasPrefix(r.line.Text, "commit ")):
+			text = headStyle.Render(text)
+		case r.line.Kind == ide.Meta:
+			text = dimStyle.Render(text)
+		case r.line.Kind == ide.Code:
+			text = codeLine(st, text, r.line)
+		case r.line.Kind == ide.Match:
+			text = hitLine(st, text, r.j == 0, r.line)
 		default:
 			text = outputLine(st, text, r.line.Text)
 		}
@@ -326,6 +345,24 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	out := append(make([]string, ih-len(shown), ih), airy(shown)...)
 	head := title(st, cam, func(int) string { return "terminal" }, fw-3)
 	return frame(w, h, border(cam, ide.Terminal), " "+head+" ", out)
+}
+
+// runShown is how long a command runs before the terminal shows for how long.
+const runShown = 3 * time.Second
+
+// runTime is how long the running command of t has run by now, as the status line counts it:
+// "7s", "1m05s", "1h02m"; "" for the first runShown, or when its start is unknown.
+func runTime(t *ide.Term, now time.Time) string {
+	d := now.Sub(t.RunAt).Truncate(time.Second)
+	switch {
+	case !t.Running || t.RunAt.IsZero() || d < runShown:
+		return ""
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", d/time.Second)
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", d/time.Minute, d%time.Minute/time.Second)
+	}
+	return fmt.Sprintf("%dh%02dm", d/time.Hour, d%time.Hour/time.Minute)
 }
 
 // lead is what goes before a command's line of kind k: the prompt on its first, as much room on

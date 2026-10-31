@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"github.com/pixelbender/claudit/internal/ide"
 	"github.com/pixelbender/claudit/internal/ideview"
 	"github.com/pixelbender/claudit/internal/protocol"
@@ -88,13 +86,13 @@ func TestModelSubagent(t *testing.T) {
 	modelEvents(m, protocol.ToolUse{ID: "call1", Name: "Agent", Input: map[string]any{"description": "Add mul", "subagent_type": "general-purpose"}})
 	sub := modelAgent(t, m, "call1")
 	// A subagent gets a name of its own.
-	if sub.Kind != ide.Subagent || sub.Name != "Kevin" || sub.Parent != "main" || sub.Status != ide.Running || sub.Started != modelT0 {
+	if sub.Kind != ide.Subagent || sub.Name != "kevin" || sub.Parent != "main" || sub.Status != ide.Running || sub.Started != modelT0 {
 		t.Fatalf("subagent %+v", sub)
 	}
 
 	modelAt(m, time.Second)
 	modelEvents(m, protocol.TaskStarted{TaskID: "a0b8", ToolUseID: "call1", Type: "local_agent", Description: "something else"})
-	if sub.Name != "Kevin" || sub.Started != modelT0 {
+	if sub.Name != "kevin" || sub.Started != modelT0 {
 		t.Errorf("TaskStarted changed the known subagent: %+v", sub)
 	}
 
@@ -109,7 +107,7 @@ func TestModelSubagent(t *testing.T) {
 	if got, want := modelOpen(m), []string{"call1:Read:r1", "main:Agent:call1"}; !slices.Equal(got, want) {
 		t.Errorf("open calls %q, want %q", got, want)
 	}
-	if p, ok := m.Popup.(*PermissionPopup); !ok || p.AgentName != "Kevin" || p.AgentColor != sub.Color {
+	if p, ok := m.Popup.(*PermissionPopup); !ok || p.AgentName != "kevin" || p.AgentColor != sub.Color {
 		t.Fatalf("popup %#v", m.Popup)
 	}
 	modelPress(m, inputKey("y"))
@@ -144,7 +142,7 @@ func TestModelSubagentNamesAndEnds(t *testing.T) {
 	for key, want := range map[string]struct {
 		name   string
 		status ide.AgentStatus
-	}{"c1": {"Kevin", ide.Running}, "c2": {"Stuart", ide.Failed}, "c3": {"Bob", ide.Failed}} {
+	}{"c1": {"kevin", ide.Running}, "c2": {"stuart", ide.Failed}, "c3": {"bob", ide.Failed}} {
 		a := modelAgent(t, m, key)
 		if a.Name != want.name || a.Status != want.status || a.Parent != "main" || a.Started != modelT0 {
 			t.Errorf("%s: %+v", key, a)
@@ -502,6 +500,27 @@ func TestModelSubagentKeepsMainStatus(t *testing.T) {
 	}
 }
 
+// An agent runs the model its calls name, a workflow agent the one its progress names.
+func TestModelAgentModels(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelEvents(m,
+		protocol.ToolUse{ID: "toolu_A", Name: "Agent", Input: map[string]any{"description": "tests"}, Model: "claude-opus-5-5"},
+		protocol.ToolUse{ID: "t1", Name: "Read", Input: map[string]any{"file_path": "/a"}, Parent: "toolu_A", Model: "claude-haiku-5-5"},
+		protocol.ToolUse{ID: "t2", Name: "Read", Input: map[string]any{"file_path": "/b"}, Parent: "toolu_A"},
+	)
+	if got := modelAgent(t, m, "main").Model; got != "claude-opus-5-5" {
+		t.Errorf("main runs %q", got)
+	}
+	if got := modelAgent(t, m, "toolu_A").Model; got != "claude-haiku-5-5" {
+		t.Errorf("the subagent runs %q", got)
+	}
+	modelWorkflow(t, m)
+	modelProgress(m, protocol.WorkflowItem{Index: 1, Title: "tests", AgentID: "ac42", State: "start", Model: "claude-sonnet-5-5"})
+	if got := modelAgent(t, m, "ac42").Model; got != "claude-sonnet-5-5" {
+		t.Errorf("the workflow agent runs %q", got)
+	}
+}
+
 func TestModelExitEndsAgents(t *testing.T) {
 	dir := t.TempDir()
 	modelAppend(t, filepath.Join(dir, "agent-cccccccccc.jsonl"), modelCall("z1", "Bash"))
@@ -526,29 +545,6 @@ func TestModelExitEndsAgents(t *testing.T) {
 	}
 	if len(m.crew.tailers) != 0 {
 		t.Error("tailers outlived claude")
-	}
-}
-
-func TestModelCameraStatus(t *testing.T) {
-	m, _ := modelNew(t, false)
-	if m.Status.Camera != "" {
-		t.Errorf("a camera with main alone: %q", m.Status.Camera)
-	}
-	modelEvents(m, protocol.ToolUse{ID: "s1", Name: "Agent", Input: map[string]any{"description": "tests"}})
-	sub := modelAgent(t, m, "s1")
-	modelPress(m, inputKey("alt+"+string(rune('0'+sub.Hotkey))))
-	m.Update(tickMsg(modelT0))
-	if want := "pinned · Kevin"; m.Status.Camera != want || m.Status.CameraColor != sub.Color {
-		t.Errorf("pinned camera %q %d, want %q %d", m.Status.Camera, m.Status.CameraColor, want, sub.Color)
-	}
-	sub.Activity = "Edit calc.py"
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	if want := "pinned · Kevin (Edit calc.py)"; m.Status.Camera != want {
-		t.Errorf("camera %q, want %q", m.Status.Camera, want)
-	}
-	modelPress(m, inputKey("alt+0"))
-	if want := "auto → Kevin (Edit calc.py)"; m.Status.Camera != want || m.Sim.State().Pinned {
-		t.Errorf("camera %q pinned %v, want %q", m.Status.Camera, m.Sim.State().Pinned, want)
 	}
 }
 
@@ -729,7 +725,7 @@ func TestModelReplaysMultiFixture(t *testing.T) {
 	}
 	want := []row{
 		{"main", "main", "", "", ide.Main, ide.Done}, // its last turn is over
-		{subKey, "Kevin", "main", "", ide.Subagent, ide.Done},
+		{subKey, "kevin", "main", "", ide.Subagent, ide.Done},
 		{wfKey, "calc-tests-and-docs", "main", "", ide.Workflow, ide.Done},
 		{tests, "tests", wfKey, "Build", ide.WorkflowAgent, ide.Done},
 		{docs, "docs", wfKey, "Build", ide.WorkflowAgent, ide.Done},

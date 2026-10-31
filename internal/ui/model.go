@@ -6,7 +6,9 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -42,10 +44,11 @@ type Model struct {
 	ShowHelp   bool          // F1: the key reference over everything
 	Wrap       bool          // the editor wraps long lines (alt+z)
 
-	Suggest    []protocol.Command // slash commands completing the prompt, shown above it
-	SuggestSel int                // highlighted one
-	Away       bool               // the terminal lost the focus: what needs the user is announced
-	StartModel string             // the model claude starts with as args or settings name it ("opus"), shown until a turn tells
+	Suggest     []protocol.Command // slash commands completing the prompt, shown above it
+	SuggestSel  int                // highlighted one
+	Away        bool               // the terminal lost the focus: what needs the user is announced
+	StartModel  string             // the model claude starts with as args or settings name it ("opus"), shown until a turn tells
+	StartEffort string             // the effort they name ("high"), as StartModel
 
 	chatMax   int            // largest useful ChatScroll, written by View
 	chatLines chatCache      // drawn chat entries, kept by View
@@ -88,6 +91,9 @@ type Model struct {
 	exitReport   string             // why claude exited, when it failed; "" while it runs or after a clean exit
 	turnAt       time.Time          // when the current turn began
 	session      string             // id of the conversation, once claude reports it
+	failure      string             // what went wrong in the turn, for the status once it ends
+	usage        protocol.Usage     // what claude's process has taken, as of the last result
+	usageKnown   bool               // usage counts this process alone: false until its first result
 
 	limits  protocol.RateLimits // the rate-limit use claude reported last
 	cost    float64             // the session's cost in USD, as of the last turn
@@ -113,15 +119,17 @@ const (
 type ChatEntry struct {
 	Kind   EntryKind
 	Text   string
-	Queued bool      // a prompt typed while claude works, drawn under the chat until it goes to claude
-	Cut    bool      // a prompt whose turn the user interrupted: red, a ✗ for its arrow
-	Answer bool      // the user's answer to a question of a popup, drawn right under it
-	At     time.Time // when it was said, shown grey at the right; zero for not known
+	Queued bool           // a prompt typed while claude works, drawn under the chat until it goes to claude
+	Cut    bool           // a prompt whose turn the user interrupted: red, a ✗ for its arrow
+	Answer bool           // the user's answer to a question of a popup, drawn right under it
+	At     time.Time      // when it was said, shown grey at the right; zero for not known
+	Tokens protocol.Usage // a prompt's: the tokens its turn took, shown after it; zero for not known
 }
 
 // Status feeds the status line.
 type Status struct {
 	Model   string
+	Effort  string // of the model: "low" … "max"; "" when not known, or "auto", the model's own
 	State   string // "starting", "idle", "thinking", "responding", "running", "waiting for you", "exited"
 	Busy    bool   // the agent is working: show a spinner
 	Frame   int    // spinner frame
@@ -130,9 +138,7 @@ type Status struct {
 	Agents  int    // subagents and workflow agents at work
 	Replay  bool
 	Mode    string // permission mode: "default", "acceptEdits", "plan", …; "" until known
-
-	Camera      string // e.g. "auto → tests" or "pinned · tests"
-	CameraColor int    // palette slot of the agent the camera is on
+	Alert   bool   // State says what went wrong, such as an API error: red
 
 	Context float64 // fraction of main's context window in use; 0 until the window is known
 }
@@ -179,9 +185,11 @@ type PermissionPopup struct {
 	Allow      bool   // highlighted button
 }
 
-// ResumePopup lists the saved conversations of the project, the latest first.
+// ResumePopup lists the saved conversations of the project, the latest first, the one claude is
+// in among them: the list looks the same whichever is resumed.
 type ResumePopup struct {
 	Sessions []sessions.Info
+	Current  string // id of the conversation claude is in, marked; picking it changes nothing
 	Cursor   int
 	Now      time.Time // when the list was read, for the ages
 }
@@ -298,10 +306,11 @@ func (m *Model) tickInterval() time.Duration {
 	return tickIdle
 }
 
-// animating reports whether something on screen moves by itself: a wipe, a popup dropping in.
+// animating reports whether something on screen moves by itself: a wipe, a popup dropping in,
+// the spinner while claude starts.
 func (m *Model) animating() bool {
 	cut := ideview.Cutting(m.Sim.State(), m.Now)
-	return cut || !m.popupAt.IsZero() && m.Now.Sub(m.popupAt) < drawPopupDrop
+	return cut || m.Status.State == "starting" || !m.popupAt.IsZero() && m.Now.Sub(m.popupAt) < drawPopupDrop
 }
 
 func (m *Model) nextTick() tea.Cmd {
@@ -313,6 +322,7 @@ func (m *Model) handleEvent(ev protocol.Event) {
 	switch ev := ev.(type) {
 	case protocol.Init:
 		m.Status.Model, m.session = ev.Model, ev.SessionID
+		m.Status.Effort = cmp.Or(ev.Effort, m.Status.Effort) // claude -p (2.1.314) leaves it out
 		if ev.Cwd != "" {
 			m.Sim.SetRoot(ev.Cwd)
 		}
@@ -320,7 +330,7 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			m.setMode(ev.PermissionMode)
 		}
 		m.cli.outputStyle, m.cli.mcp = ev.OutputStyle, ev.MCP
-		m.cli.version = cmp.Or(ev.Version, m.cli.version)
+		m.setVersion(ev.Version)
 		var list []protocol.Command
 		for _, c := range ev.Commands {
 			list = append(list, protocol.Command{Name: c})
@@ -347,10 +357,34 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			break
 		}
 		m.local("Error: " + ev.Message)
+	case protocol.APIRetry:
+		if m.Status.Busy { // a side call's or a background agent's starts no turn
+			m.working(retryState(ev))
+		}
+	case protocol.Compacting:
+		state := m.Status.State
+		if state == "waiting for you" {
+			state = m.behind
+		}
+		switch {
+		case !m.Status.Busy:
+		case ev.On:
+			m.working("compacting")
+		case state == "compacting": // the call that goes on with the turn is on its way
+			m.working("thinking")
+		}
+	case protocol.ModelFallback:
+		m.Status.Model = ev.To // until the next turn's Init names the model again
+		// After what was said before it: the call that fell back has said nothing yet.
+		m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, At: now,
+			Text: cmp.Or(ev.Text, fmt.Sprintf("%s failed (%s): this turn runs on %s", ev.From, ev.Trigger, ev.To))})
 	case protocol.Commands:
 		m.addCommands(ev.List)
 		m.cli.models, m.cli.outputStyles, m.cli.account = ev.Models, ev.OutputStyles, ev.Account
-		m.cli.version = cmp.Or(ev.Version, m.cli.version)
+		m.setVersion(ev.Version)
+		if m.Status.Effort == "" { // as its model
+			m.Status.Effort = m.StartEffort
+		}
 		if m.Status.Model == "" && m.StartModel != "" { // claude -p tells its model only with a turn
 			m.Status.Model = m.StartModel
 			for _, md := range ev.Models {
@@ -377,6 +411,10 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		}
 		m.Chat[len(m.Chat)-1].Text += ev.Text
 	case protocol.CLIReply:
+		if f := apiFailure(ev.Text); f != "" { // the status says it; the chat stays the conversation
+			m.failure = f
+			break
+		}
 		m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, Text: ev.Text, At: now})
 	case protocol.ToolUse:
 		m.toolUse(ev, now)
@@ -429,8 +467,24 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			m.windows = map[string]int{}
 		}
 		maps.Copy(m.windows, ev.ContextWindows)
-		if n := len(m.Chat); ev.IsError && strings.TrimSpace(ev.Text) != "" && !interrupted && !(n > 0 && strings.TrimSpace(m.Chat[n-1].Text) == strings.TrimSpace(ev.Text)) {
-			m.local(ev.Text) // unless the CLI said it in the conversation already
+		if ev.IsError && !interrupted && strings.TrimSpace(ev.Text) != "" {
+			m.failure = cmp.Or(m.failure, failureState(ev.Text))
+		}
+		if m.failure != "" { // what went wrong stays in the status until claude goes on
+			m.Status.State, m.Status.Alert, m.failure = m.failure, true, ""
+		}
+		// The result counts the whole process, subagents too: the turn took the difference. A
+		// process's first result may count earlier processes of the conversation (--resume): the
+		// turn's own count, main's alone, stands in for it.
+		took := ev.Turn
+		if m.usageKnown {
+			took = protocol.Usage{Input: ev.Usage.Input - m.usage.Input, Output: ev.Usage.Output - m.usage.Output,
+				CacheRead: ev.Usage.CacheRead - m.usage.CacheRead, CacheWrite: ev.Usage.CacheWrite - m.usage.CacheWrite}
+		}
+		m.usage, m.usageKnown = ev.Usage, true
+		if i := m.turnPrompt(); i >= 0 { // a turn claude starts by itself adds to the prompt's
+			t := &m.Chat[i].Tokens
+			t.Input, t.Output, t.CacheRead, t.CacheWrite = t.Input+took.Input, t.Output+took.Output, t.CacheRead+took.CacheRead, t.CacheWrite+took.CacheWrite
 		}
 		if len(m.pending) > 0 { // claude goes on with what was typed meanwhile: it is not done
 			m.notice = ""
@@ -449,6 +503,11 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		for _, l := range m.stderr {
 			report += "\n  " + l
 		}
+		if slices.ContainsFunc(m.stderr, func(l string) bool { // a flag, or a value of one, it does not know
+			return strings.Contains(l, "unknown option") || strings.Contains(l, "Allowed choices are")
+		}) {
+			report += "\n  claudit needs claude " + minClaude + " or newer · " + updateHint
+		}
 		if first {
 			m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, Text: report, At: now})
 			if ev.Err != nil || len(m.stderr) > 0 {
@@ -459,6 +518,76 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.Popup, m.queue = nil, nil
 		m.exited(now)
 	}
+}
+
+// retryState is the status while an API call waits to go again: why it failed, and which try comes.
+func retryState(r protocol.APIRetry) string {
+	why := fmt.Sprintf("API error %d", r.Status)
+	switch r.Status {
+	case 0:
+		why = "connection error"
+	case 429:
+		why = "rate limited"
+	case 529:
+		why = "overloaded"
+	}
+	return fmt.Sprintf("%s · retry %d/%d", why, r.Attempt, r.MaxRetries)
+}
+
+// turnState is the status of a turn a prompt starts: "compacting" for /compact, "thinking" else.
+func turnState(cmd string, isCmd bool) string {
+	if isCmd && cmd == "compact" {
+		return "compacting"
+	}
+	return "thinking"
+}
+
+// turnPrompt is the index of the prompt of the turn that ends: the last in the chat, if nothing
+// claude said since is before it; an answer to claude's question is no prompt. -1 for none (a
+// slash command's turn).
+func (m *Model) turnPrompt() int {
+	if m.cmdTurn {
+		return -1
+	}
+	for i := len(m.Chat) - 1; i >= 0; i-- {
+		if m.Chat[i].Kind == UserEntry && !m.Chat[i].Answer {
+			return i
+		}
+	}
+	return -1
+}
+
+// apiFailures start the CLI's replies that say an API call failed: they go to the status, not
+// the chat.
+var apiFailures = []string{"API Error", "API error", "Credit balance is too low", "Invalid API key", "OAuth token",
+	"Request timed out", "Prompt is too long"}
+
+// apiFailure is the status for a reply of the CLI that says an API call failed; "" for another.
+func apiFailure(text string) string {
+	if t := strings.TrimSpace(text); slices.ContainsFunc(apiFailures, func(p string) bool { return strings.HasPrefix(t, p) }) {
+		return failureState(t)
+	}
+	return ""
+}
+
+// apiMessage is the message of an API error's body: {"error":{"message":"Overloaded"}}.
+var apiMessage = regexp.MustCompile(`"message"\s*:\s*"([^"]*)"`)
+
+// failureState is what went wrong, short for the status: "API error 529 · Overloaded".
+func failureState(text string) string {
+	t := drawOneLine(strings.TrimSpace(text))
+	rest, ok := strings.CutPrefix(t, "API Error: ")
+	if !ok {
+		return t
+	}
+	code, body, _ := strings.Cut(rest, " ")
+	if _, err := strconv.Atoi(code); err != nil {
+		return "API error · " + rest // "Request timed out."
+	}
+	if m := apiMessage.FindStringSubmatch(body); m != nil {
+		body = m[1]
+	}
+	return strings.TrimSuffix("API error "+code+" · "+body, " · ")
 }
 
 // maxStderr is how many of claude's last stderr lines the report of its exit keeps.
@@ -474,6 +603,9 @@ var modeCycle = []string{"default", "acceptEdits", "plan", "auto"}
 // setMode shows the permission mode the agent reports. A mode beyond modeCycle (one the session
 // was started in, such as bypassPermissions) joins the cycle, so shift+tab can come back to it.
 func (m *Model) setMode(mode string) {
+	if mode == "manual" { // what claude calls the default mode since 2.1.200
+		mode = "default"
+	}
 	m.agentMode = mode
 	if !slices.Contains(modeCycle, mode) {
 		m.extraMode = mode
@@ -505,10 +637,11 @@ func (m *Model) cycleMode() {
 
 // working marks main busy with state, unless a popup is waiting for the user: that says more.
 func (m *Model) working(state string) {
-	if m.Popup == nil {
-		m.Status.State = state
-	} else {
+	m.Status.Alert, m.failure = false, ""    // claude goes on: what went wrong is past
+	if m.Status.State == "waiting for you" { // only a question covers it; a list the user opened does not
 		m.behind = state
+	} else {
+		m.Status.State = state
 	}
 	m.Status.Busy = true
 }
@@ -693,7 +826,7 @@ func (m *Model) prompt(text string) tea.Cmd {
 		return nil
 	}
 	m.send(m.message(text))
-	m.Status.State, m.Status.Busy, m.cmdTurn = "thinking", true, isCmd
+	m.Status.State, m.Status.Busy, m.Status.Alert, m.cmdTurn = turnState(cmd, isCmd), true, false, isCmd
 	return nil
 }
 
@@ -797,7 +930,8 @@ func (m *Model) flush() {
 		}
 	}
 	m.send(m.message(strings.Join(m.pending[:n], "\n\n")))
-	_, m.cmdTurn = slash(m.pending[0])
+	first, isCmd := slash(m.pending[0])
+	m.cmdTurn = isCmd
 	for _, p := range m.pending[:n] {
 		if !m.cmdTurn { // a command goes alone and stays out of the chat
 			m.Chat = append(m.Chat, ChatEntry{Kind: UserEntry, Text: p, At: m.clock()})
@@ -807,7 +941,7 @@ func (m *Model) flush() {
 	if m.queueAt >= 0 {
 		m.queueAt -= n
 	}
-	m.Status.State, m.Status.Busy = "thinking", true
+	m.Status.State, m.Status.Busy, m.Status.Alert = turnState(first, isCmd), true, false
 }
 
 // paste puts what the terminal pasted in the prompt: the pictures whose paths it is, a picture

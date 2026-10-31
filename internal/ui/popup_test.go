@@ -178,7 +178,7 @@ func TestPopupPermission(t *testing.T) {
 // The detail reads as what it is: a diff in its colours, code highlighted, a plan as markdown.
 func TestPopupDetail(t *testing.T) {
 	diff := drawDetail("Edit", "calc.py\n def sub(a, b):\n-    return a - b\n+    return b - a", 40)
-	if want := []string{styleStrong.Render("calc.py"), styleDim.Render(" def sub(a, b):"), styleErr.Render("-    return a - b"), styleOK.Render("+    return b - a")}; strings.Join(diff, "\n") != strings.Join(want, "\n") {
+	if want := []string{styleStrong.Render("calc.py"), styleDim.Render(" def sub(a, b):"), styleFg.Background(theme.RemovedBg).Render("-    return a - b"), styleFg.Background(theme.AddedBg).Render("+    return b - a")}; strings.Join(diff, "\n") != strings.Join(want, "\n") {
 		t.Errorf("diff %q", diff)
 	}
 	plan := ansi.Strip(strings.Join(drawDetail("ExitPlanMode", "# Plan\n\n- add `mul`", 40), "\n"))

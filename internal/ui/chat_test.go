@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pixelbender/claudit/internal/theme"
@@ -288,27 +287,26 @@ func TestChatInputCaret(t *testing.T) {
 }
 
 func TestChatStatus(t *testing.T) {
-	st := Status{Model: "claude-sonnet-4-5", State: "thinking", Busy: true, Frame: 3, Usage: "5h 9% · 7d 58%", Replay: true,
-		Camera: "auto → tests (Edit calc.py)", CameraColor: 2}
+	st := Status{Model: "claude-sonnet-4-5", State: "thinking", Busy: true, Frame: 3, Usage: "5h 9% · 7d 58%", Replay: true, Agents: 2}
 	for _, hints := range [][]string{drawHintsPrompt, drawHintsPanel, nil} {
 		for w := 0; w <= 200; w++ {
 			drawCheckSize(t, renderStatus(st, hints, w), w, 1)
 		}
 	}
 	wide := renderStatus(st, drawHintsPrompt, 190)
-	// Model, limits, the steady part; what claude does and the camera last.
+	// Model, limits, the steady part; what claude does last, without the agents at work or the camera.
 	for _, want := range []string{
-		"● claude-sonnet-4-5 · 5h 9% · 7d 58% · replay · ⠸ thinking · cam auto → tests (Edit calc.py)",
+		"● claude-sonnet-4-5 · 5h 9% · 7d 58% · replay · ⠸ thinking  ",
 		"shift+tab mode · tab agents · / commands · F1 help · esc x2 quit",
 	} {
 		if !strings.Contains(ansi.Strip(wide), want) {
 			t.Errorf("wide status %q lacks %q", ansi.Strip(wide), want)
 		}
 	}
-	// The name alone is in the agent's colour; the separators are grey.
-	if name := lipgloss.NewStyle().Foreground(theme.Agents[2]).Render("tests"); !strings.Contains(wide, name) {
-		t.Errorf("camera name not in its colour: %q", wide)
+	if strings.Contains(ansi.Strip(wide), "agents at work") || strings.Contains(ansi.Strip(wide), "cam ") {
+		t.Errorf("the agents at work or the camera in the status: %q", ansi.Strip(wide))
 	}
+	// The separators are grey.
 	if !strings.Contains(wide, styleDim.Render(" · ")) || strings.Contains(wide, styleFg.Render(" · ")) {
 		t.Errorf("separators not grey: %q", wide)
 	}
@@ -317,23 +315,11 @@ func TestChatStatus(t *testing.T) {
 		t.Errorf("narrow status should keep only the last hints: %q", narrow)
 	}
 
-	// A part that does not fit goes whole: what the camera's agent does, then the camera.
-	seen := map[string]bool{}
+	// Nothing is cut short.
 	for w := 40; w <= 200; w++ {
-		got := drawPlainLines(renderStatus(st, drawHintsPrompt, w))[0]
-		if strings.Contains(got, "…") {
+		if got := drawPlainLines(renderStatus(st, drawHintsPrompt, w))[0]; strings.Contains(got, "…") {
 			t.Errorf("%d: cut short: %q", w, got)
 		}
-		if i := strings.Index(got, "cam "); i >= 0 {
-			cam := strings.TrimSpace(strings.SplitN(got[i:], "  ", 2)[0])
-			if cam != "cam auto → tests (Edit calc.py)" && cam != "cam auto → tests" {
-				t.Errorf("%d: camera %q", w, cam)
-			}
-			seen[cam] = true
-		}
-	}
-	if len(seen) != 2 {
-		t.Errorf("camera forms seen: %v", seen)
 	}
 
 	// Narrow, the steady part makes room for what claude does, the model first; the mode stays.
@@ -347,7 +333,7 @@ func TestChatStatus(t *testing.T) {
 		t.Errorf("wide: %q", got)
 	}
 
-	// The hints stay as what claude does changes size; the camera is cut instead.
+	// The hints stay as what claude does changes size.
 	for _, state := range []string{"idle", "running Bash", "running a very long tool name indeed"} {
 		st := st
 		st.State = state
@@ -371,15 +357,18 @@ func TestChatStatus(t *testing.T) {
 		t.Errorf("narrow panel status: %q", got)
 	}
 
-	pinned := renderStatus(Status{Model: "m", State: "idle", Camera: "pinned · docs", CameraColor: 11}, nil, 80)
-	if !strings.Contains(ansi.Strip(pinned), "● m · idle · cam pinned · docs") ||
-		!strings.Contains(pinned, lipgloss.NewStyle().Foreground(theme.Agents[11%len(theme.Agents)]).Render("docs")) {
-		t.Errorf("pinned status: %q", pinned)
+	if failed := renderStatus(Status{Model: "m", State: "API error 529 · Overloaded", Alert: true}, nil, 80); !strings.Contains(failed, styleErr.Render("API error 529 · Overloaded")) {
+		t.Errorf("a failure is not red: %q", failed)
 	}
 	idle := ansi.Strip(renderStatus(Status{Model: "m", State: "idle"}, drawHintsPrompt, 80))
 	if !strings.Contains(idle, "● m · idle") || strings.Contains(idle, "cam") ||
 		strings.ContainsAny(idle, strings.Join(drawSpinner, "")) {
 		t.Errorf("idle status: %q", idle)
+	}
+	// While claude starts, a spinner stands in for the dot.
+	starting := ansi.Strip(renderStatus(Status{Model: "m", State: "starting", Frame: 3}, nil, 80))
+	if !strings.HasPrefix(strings.TrimSpace(starting), drawSpinner[3]+" m · starting") {
+		t.Errorf("starting status: %q", starting)
 	}
 
 	// The context in few cells, after the limits.
@@ -388,8 +377,8 @@ func TestChatStatus(t *testing.T) {
 		t.Errorf("context: status %q", got)
 	}
 
-	// The permission mode follows the model, in its colour in Claude Code; the default mode shows nothing.
-	if got := ansi.Strip(renderStatus(Status{Model: "m", State: "idle", Mode: "default"}, nil, 80)); strings.TrimSpace(got) != "● m · idle" {
+	// The permission mode follows the model, in its colour in Claude Code; every mode shows, the default too.
+	if got := ansi.Strip(renderStatus(Status{Model: "m", State: "idle", Mode: "default"}, nil, 80)); strings.TrimSpace(got) != "● m · ⏵ manual mode · idle" {
 		t.Errorf("mode default: status %q", got)
 	}
 	for mode, want := range map[string]string{
@@ -405,13 +394,33 @@ func TestChatStatus(t *testing.T) {
 	}
 }
 
+// The effort follows the model, grey.
+func TestChatStatusEffort(t *testing.T) {
+	got := renderStatus(Status{Model: "claude-opus-5-5", Effort: "high", State: "idle"}, nil, 100)
+	if want := styleFg.Render("claude-opus-5-5") + styleDim.Render(" high"); !strings.Contains(got, want) {
+		t.Errorf("status %q lacks %q", got, want)
+	}
+}
+
+// A window at its limit shows red, extra usage paying past it as a warning; the colour of a use
+// goes by the thresholds alone, whatever claude says of the window.
+func TestChatUsageStates(t *testing.T) {
+	got := drawUsage("5h limit until 13:30 · 7d 40% fable 95% · extra usage")
+	sep := styleDim.Render(" · ")
+	want := styleDim.Render("5h ") + styleErr.Render("limit until 13:30") + sep + styleDim.Render("7d ") + styleFg.Render("40%") +
+		styleDim.Render(" fable ") + styleAccent.Render("95%") + sep + styleModeAuto.Render("extra usage")
+	if got != want {
+		t.Errorf("drawUsage = %q, want %q", got, want)
+	}
+}
+
 // A window used 80% shows as the auto mode does, from 90% in Claude's orange; so does the context.
 // The names of the windows and of the context are grey.
 func TestChatUsageColours(t *testing.T) {
-	got := drawUsage("5h 79% · 7d 80% · fable 95% · $0.0123")
+	got := drawUsage("5h 79% 4h12m · 7d 80% fable 95% 2d8h · $0.0123")
 	sep := styleDim.Render(" · ")
-	want := styleDim.Render("5h ") + styleFg.Render("79%") + sep + styleDim.Render("7d ") + styleModeAuto.Render("80%") + sep +
-		styleDim.Render("fable ") + styleAccent.Render("95%") + sep + styleFg.Render("$0.0123")
+	want := styleDim.Render("5h ") + styleFg.Render("79%") + styleDim.Render(" 4h12m") + sep + styleDim.Render("7d ") + styleModeAuto.Render("80%") +
+		styleDim.Render(" fable ") + styleAccent.Render("95%") + styleDim.Render(" 2d8h") + sep + styleFg.Render("$0.0123")
 	if got != want {
 		t.Errorf("drawUsage = %q, want %q", got, want)
 	}
@@ -419,26 +428,6 @@ func TestChatUsageColours(t *testing.T) {
 	for f, want := range map[float64]string{0.794: ctx + styleFg.Render("79%"), 0.8: ctx + styleModeAuto.Render("80%"), 0.95: ctx + styleAccent.Render("95%")} {
 		if got := drawContext(f); got != want {
 			t.Errorf("drawContext(%v) = %q, want %q", f, got, want)
-		}
-	}
-}
-
-func TestChatCamera(t *testing.T) {
-	tests := []struct{ cam, name, activity string }{
-		{"auto → tests", "tests", ""},
-		{"auto → tests (Edit calc.py)", "tests", " (Edit calc.py)"},
-		{"pinned · write docs ($ go test ./...)", "write docs", " ($ go test ./...)"},
-		{"pinned · fix (part 2", "fix (part 2", ""},
-		{"main", "main", ""},
-	}
-	for _, tt := range tests {
-		got := drawCamera(tt.cam, 1)
-		if ansi.Strip(got) != "cam "+tt.cam {
-			t.Errorf("%q: text %q", tt.cam, ansi.Strip(got))
-		}
-		name := lipgloss.NewStyle().Foreground(theme.Agents[1]).Render(tt.name)
-		if !strings.Contains(got, name) || (tt.activity != "" && !strings.HasSuffix(got, styleDim.Render(tt.activity))) {
-			t.Errorf("%q: name %q / activity %q not styled apart: %q", tt.cam, tt.name, tt.activity, got)
 		}
 	}
 }

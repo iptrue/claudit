@@ -60,7 +60,7 @@ func run(args []string) error {
 
 	m := ui.New(sess.Send, cwd, replay)
 	if !replay {
-		m.StartModel = claude.Model(args, cwd)
+		m.StartModel, m.StartEffort = claude.Model(args, cwd), claude.Effort(args, cwd)
 	}
 	p := tea.NewProgram(m, tea.WithFilter(ui.Filter))
 	done := make(chan struct{})

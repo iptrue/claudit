@@ -97,6 +97,9 @@ func (m *Model) slashCommand(text, cmd string) (done bool, run tea.Cmd) {
 	case args == "" && m.openPicker(cmd):
 	case cmd == "model" && args != "" && !m.Status.Replay && m.Status.State != "exited":
 		m.setModel(args)
+	case cmd == "effort" && args != "" && !m.Status.Replay && m.Status.State != "exited":
+		m.setEffort(args)
+		return false, nil // claude runs the command
 	case interactiveOnly[cmd] && !m.known[cmd]:
 		m.local("/" + cmd + " runs only in the interactive claude: claude -p turns it down")
 	case len(m.known) > 0 && !m.known[cmd] && !strings.Contains(cmd, "/") && m.unknown != text:
@@ -113,6 +116,20 @@ func (m *Model) slashCommand(text, cmd string) (done bool, run tea.Cmd) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// efforts are the levels /effort takes, and "auto", the model's own.
+var efforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// setEffort shows the effort /effort level sets: claude -p takes the command but tells the level
+// to nobody. "auto" shows none; a level it will refuse changes nothing.
+func (m *Model) setEffort(level string) {
+	switch level = strings.ToLower(level); {
+	case level == "auto":
+		m.Status.Effort = ""
+	case slices.Contains(efforts, level):
+		m.Status.Effort = level
+	}
 }
 
 // setModel switches claude to model at once. claude -p would run "/model …" sent as a prompt too,

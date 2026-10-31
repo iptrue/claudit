@@ -23,6 +23,7 @@ var managedSettings = func() string {
 // settings is what one of claude's settings files sets of what claudit needs to know.
 type settings struct {
 	Model       string `json:"model"`
+	EffortLevel string `json:"effortLevel"`
 	Permissions struct {
 		DefaultMode string `json:"defaultMode"`
 	} `json:"permissions"`
@@ -81,6 +82,25 @@ func Model(args []string, cwd string) string {
 		}
 	}
 	return "default"
+}
+
+// Effort is the effort claude starts with in cwd given args, picked as claude does:
+// $CLAUDE_CODE_EFFORT_LEVEL, which overrides it for the session, then --effort, then the
+// effortLevel of the managed, local, project and user settings. "" when nothing names one: the
+// model's own. claude -p tells its effort only with the first turn.
+func Effort(args []string, cwd string) string {
+	if v := os.Getenv("CLAUDE_CODE_EFFORT_LEVEL"); v != "" {
+		return v
+	}
+	if v, ok := flag(args, "--effort"); ok {
+		return v
+	}
+	for _, s := range readSettings(cwd) {
+		if s.EffortLevel != "" {
+			return s.EffortLevel
+		}
+	}
+	return ""
 }
 
 // WithMode is args with --permission-mode mode added, unless they or the settings in cwd pick a

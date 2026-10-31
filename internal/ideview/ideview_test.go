@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pixelbender/claudit/internal/ide"
@@ -542,8 +541,8 @@ func TestCarets(t *testing.T) {
 		what, text string
 		params     []string
 	}{
-		{"tests' selection tint", "func", []string{sgr("48", lipgloss.Darken(tests, 0.6))}},
-		{"main's selection", "println", []string{sgr("48", theme.SelBg)}},
+		{"tests' selection, red as what goes", "func", []string{sgr("48", theme.RemovedBg)}},
+		{"main's selection, red as what goes", "println", []string{sgr("48", theme.RemovedBg)}},
 	}
 	for _, c := range checks {
 		if !styled(out, c.text, c.params...) {
@@ -569,20 +568,20 @@ func TestCarets(t *testing.T) {
 	out = render(st, 120, 30)
 	busy := Render(st, Options{Busy: true}, 120, 30)
 	if reversed(out) || strings.Contains(ansi.Strip(out), frame) || !styled(busy, frame, sgr("38", theme.Agents[0])) ||
-		!strings.Contains(ansi.Strip(busy), frame+"rintln") || !styled(busy, "rintln", sgr("48", lipgloss.Darken(theme.Agents[0], 0.6))) {
+		!strings.Contains(ansi.Strip(busy), frame+"rintln") || !styled(busy, "rintln", sgr("48", theme.RemovedBg)) {
 		t.Errorf("camera switch does not swap the carets:\n%s", ansi.Strip(busy))
 	}
 
 	// An agent that has finished and played everything leaves no caret behind; main stays.
-	docsTint, mainTint := sgr("48", lipgloss.Darken(docs, 0.6)), sgr("48", lipgloss.Darken(theme.Agents[0], 0.6))
+	red := sgr("48", theme.RemovedBg)
 	mainBuf(st).Carets["a2"].Sel = &ide.Selection{From: ide.Pos{Line: 4, Col: 0}, To: ide.Pos{Line: 4, Col: 1}}
-	if out = render(st, 120, 30); !styled(out, "}", docsTint) {
+	if out = render(st, 120, 30); !styled(out, "}", red) {
 		t.Errorf("docs, still playing, has no selection:\n%s", ansi.Strip(out))
 	}
 	findAgent(st, "a2").Activity = ""
 	st.Agents[0].Status = ide.Done
 	out = render(st, 120, 30)
-	if styled(out, "}", docsTint) || !styled(out, "println", mainTint) {
+	if styled(out, "}", red) || !styled(out, "println", red) {
 		t.Errorf("finished docs still has a caret, or main lost its:\n%s", ansi.Strip(out))
 	}
 }
@@ -671,6 +670,34 @@ func TestTerminal(t *testing.T) {
 	}
 	if !styled(render(st, 100, 30), spinner[2], sgr("38", theme.Fg)) {
 		t.Errorf("the spinner of a running command is not light grey")
+	}
+}
+
+// A command running for a while shows beside its spinner how long, as the status line counts;
+// the first seconds, and a command whose start is unknown, show none.
+func TestTerminalRunTime(t *testing.T) {
+	st := sampleState()
+	st.Agents[0].Focus = ide.Terminal
+	term := &st.Agents[0].Term
+	term.Running = true
+	live := func(start time.Time) string {
+		term.RunAt = start
+		lines := strings.Split(ansi.Strip(Render(st, Options{Now: now}, 100, 30)), "\n")
+		return lines[len(lines)-2]
+	}
+	for _, start := range []time.Time{now.Add(-2 * time.Second), {}} {
+		if l := live(start); strings.ContainsAny(l, "0123456789") {
+			t.Errorf("started at %v, the live line shows %q", start, l)
+		}
+	}
+	for ran, want := range map[time.Duration]string{3 * time.Second: "3s", 72 * time.Second: "1m12s", 2*time.Hour + 3*time.Minute: "2h03m"} {
+		if l := live(now.Add(-ran)); !strings.Contains(l, spinner[0]+" "+want) {
+			t.Errorf("after %v the live line is %q, want %q", ran, l, spinner[0]+" "+want)
+		}
+	}
+	term.RunAt = now.Add(-2*time.Hour - 3*time.Minute)
+	if !styled(Render(st, Options{Now: now}, 100, 30), "2h03m", sgr("38", theme.Dim)) {
+		t.Error("the time is not grey")
 	}
 }
 
@@ -766,11 +793,11 @@ func TestAgentsPanel(t *testing.T) {
 	out := Render(st, o, 160, 30)
 	rows := leftRows(out, 160)
 	want := []string{
-		" 1 ⠋ main ◉ Edit main.go  12s",
-		" 2   ✓ tests Read main.go  3m",
+		" 1 ⠋ main ◉               12s", // what an agent does shows in its workplace, not here
+		" 2   ✓ tests               3m",
 		"     ⠋ build              45s",
 		"       Check ▱▱▱▱ 0/4",
-		" 3       ⠋ lint Bash go v… 3s",
+		" 3       ⠋ lint            3s",
 		" 5       ⠋ vet",
 		"         · 2 queued",
 		"       Write ▰ 1/1",
@@ -810,6 +837,26 @@ func TestAgentsPanel(t *testing.T) {
 	rows = leftRows(Render(st, o, 160, 30), 160)
 	if !strings.Contains(rows[4], "lint ◉") || strings.Contains(rows[0], "◉") {
 		t.Errorf("camera mark: %q / %q", rows[0], rows[4])
+	}
+}
+
+// An agent running another model than main's shows that model's family before its duration;
+// one on main's model, and main itself, show none.
+func TestAgentsPanelModel(t *testing.T) {
+	st := multiState()
+	findAgent(st, "main").Model = "claude-opus-5-5"
+	findAgent(st, "toolu_tests").Model = "claude-haiku-5-5"
+	findAgent(st, "a1").Model = "claude-opus-5-5"
+	out := Render(st, Options{Panel: Agents, Now: now}, 160, 30)
+	rows := leftRows(out, 160)
+	if got := strings.TrimRight(rows[1], " "); got != " 2   ✓ tests         haiku 3m" {
+		t.Errorf("subagent row %q", got)
+	}
+	if strings.Contains(rows[0], "opus") || strings.Contains(rows[4], "opus") {
+		t.Errorf("main's model shown: %q / %q", rows[0], rows[4])
+	}
+	if !styled(lineWith(out, "haiku"), "         haiku 3m", sgr("38", theme.Dim)) {
+		t.Error("the model is not grey, as the duration")
 	}
 }
 

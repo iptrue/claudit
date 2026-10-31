@@ -386,6 +386,9 @@ func TestBash(t *testing.T) {
 	if !s.Busy() || len(st.Tabs) != 0 {
 		t.Fatal("the next scene must wait for the command's result")
 	}
+	if ran := now.Sub(m.Term.RunAt); m.Term.RunAt.IsZero() || ran < 0 || ran > 3*time.Second {
+		t.Fatalf("the command started at %v, now is %v", m.Term.RunAt, now)
+	}
 	spin := m.Term.Spinner
 	now = now.Add(400 * time.Millisecond)
 	if !s.Tick(now) || m.Term.Spinner-spin != 5 {
