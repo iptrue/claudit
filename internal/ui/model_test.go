@@ -362,7 +362,7 @@ func TestModelToolUseAndResult(t *testing.T) {
 }
 
 func TestModelPermissionDetail(t *testing.T) {
-	root := filepath.FromSlash("/proj")
+	root := t.TempDir()
 	file := filepath.Join(root, "calc.py")
 	tests := []struct {
 		name  string

@@ -225,7 +225,7 @@ func changed(st *ide.State, r ide.TreeRow) bool {
 		return st.Edited[r.Path]
 	}
 	for p, ok := range st.Edited {
-		if ok && strings.HasPrefix(p, r.Path+string(filepath.Separator)) {
+		if ok && strings.HasPrefix(filepath.ToSlash(p), filepath.ToSlash(r.Path)+"/") {
 			return true
 		}
 	}
