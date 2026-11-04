@@ -29,20 +29,25 @@ func TestDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(cwd, link); err != nil {
-		t.Fatal(err)
-	}
 	real, err := filepath.EvalSymlinks(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(config, "projects", strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(real))
-	if got := Dir(link); got != want {
+	want := filepath.Join(config, "projects", strings.NewReplacer("/", "-", `\`, "-", ":", "-", ".", "-", "_", "-").Replace(real))
+	if got := Dir(cwd); got != want {
 		t.Errorf("Dir = %q, want %q", got, want)
 	}
 	if !strings.HasSuffix(want, "-my-project-x") {
 		t.Errorf("slug %q", want)
 	}
+	t.Run("symlink", func(t *testing.T) {
+		if err := os.Symlink(cwd, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if got := Dir(link); got != want {
+			t.Errorf("Dir(symlink) = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestList(t *testing.T) {

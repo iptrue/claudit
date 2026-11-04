@@ -174,8 +174,9 @@ func title(st *ide.State, a *ide.Agent, what func(room int) string, room int) st
 // end.
 func shortPath(path, root string, w int) string {
 	rel, err := filepath.Rel(root, path)
+	rel = filepath.ToSlash(rel)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-		rel = path
+		rel = filepath.ToSlash(path)
 	}
 	rel = clip(rel, len(rel), "") // foreign text: one plain line
 	if ansi.StringWidth(rel) <= w {

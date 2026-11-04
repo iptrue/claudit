@@ -9,11 +9,14 @@ import (
 	"github.com/pixelbender/claudit/internal/ide"
 )
 
-// Scroll is how far the user scrolled each pane back (up) from where it follows its agent: in rows,
-// in lines for a file. It is keyed by pane: the explorer, a file in the editor, an agent's terminal.
+// Scroll is how many screen rows the user scrolled each pane back (up) from where it follows its
+// agent. It is keyed by pane: files, agents, a file in the editor, an agent's terminal or browser.
 type Scroll map[string]int
 
-const filesPane = "files"
+const (
+	filesPane     = "files"
+	agentsPaneKey = "agents"
+)
 
 func fileKey(path string) string  { return "file:" + path }
 func termKey(agent string) string { return "term:" + agent }
@@ -50,6 +53,11 @@ func Wheel(st *ide.State, o Options, width, height, x, y, n int) (string, int) {
 		iw, ih = inner(t.Dx(), t.Dy())
 	}
 	switch {
+	case !ok && o.Panel == Agents:
+		base := o
+		base.Scroll = nil
+		tree, top := agentsView(st, camera(st), base, ih)
+		return agentsPaneKey, step(o.Scroll[agentsPaneKey], n, top-max(0, len(tree)-ih), top)
 	case !ok && o.Panel == Files:
 		top := scrollTop(treeSel(st, camera(st)), len(st.Tree), ih)
 		return filesPane, step(o.Scroll[filesPane], n, top-max(0, len(st.Tree)-ih), top)
@@ -57,7 +65,7 @@ func Wheel(st *ide.State, o Options, width, height, x, y, n int) (string, int) {
 		return "", 0
 	case c.pane == ide.Terminal:
 		key := termKey(c.agent.Key)
-		return key, step(o.Scroll[key], n, 0, max(0, termRows(&c.agent.Term, textWidth(iw))-ih))
+		return key, step(o.Scroll[key], n, 0, max(0, o.terminalLayout(&c.agent.Term, textWidth(iw)).total-ih))
 	case c.pane == ide.Browser: // it follows the top of the page
 		key := webKey(c.agent.Key)
 		return key, step(o.Scroll[key], n, -max(0, len(pageRows(&c.agent.Page, textWidth(iw), -1))-pageHeight(ih)), 0)
@@ -68,8 +76,8 @@ func Wheel(st *ide.State, o Options, width, height, x, y, n int) (string, int) {
 	}
 	key := fileKey(tab.Path)
 	lines, cur, tw := editorText(tab, c.agent, iw)
-	top, _ := editorTop(lines, cur, tw, ih, o.Wrap)
-	return key, step(o.Scroll[key], n, min(0, top-editorLast(lines, tw, ih, o.Wrap)), max(0, top))
+	top, last := editorRange(lines, cur, tw, ih, o.Wrap)
+	return key, step(o.Scroll[key], n, min(0, top-last), max(0, top))
 }
 
 // step is scroll d moved by n within [lo, hi], the scrolls that show the end and the start. Moving
@@ -86,11 +94,16 @@ func step(d, n, lo, hi int) int {
 // Prune forgets the scroll of the panes Render(st, o, width, …) does not draw, so that one coming
 // back follows its agent.
 func Prune(st *ide.State, o Options, width, height int) {
-	shown := map[string]bool{filesPane: o.Panel == Files}
+	shown := map[string]bool{filesPane: o.Panel == Files, agentsPaneKey: o.Panel == Agents}
+	terms := map[*ide.Term]bool{}
 	for _, c := range columns(st, camera(st), o, width-leftWidth(width), height) {
 		shown[paneKey(st, c)] = true
+		if c.pane == ide.Terminal {
+			terms[&c.agent.Term] = true
+		}
 	}
 	maps.DeleteFunc(o.Scroll, func(k string, _ int) bool { return !shown[k] })
+	maps.DeleteFunc(o.Terms, func(t *ide.Term, _ termLayout) bool { return !terms[t] })
 }
 
 // TermScroll is the scroll of agent's terminal in Render(st, o, width, height) that brings the
@@ -125,7 +138,7 @@ func lineRows(lines []ide.TermLine, iw int) int {
 		if l.Kind == ide.Command || l.Kind == ide.More {
 			first -= pw
 		}
-		n += len(wrap(l.Text, first, iw))
+		n += wrappedRows(l.Text, first, iw)
 	}
 	return n
 }

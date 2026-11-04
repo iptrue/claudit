@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -34,7 +33,7 @@ func main() {
 
 func run(args []string) error {
 	// claude has no terminal of its own (see claude.start): a closed window reaches it through ctx.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGHUP)
+	ctx, cancel := signal.NotifyContext(context.Background(), terminalSignals...)
 	defer cancel()
 
 	cwd, err := os.Getwd()

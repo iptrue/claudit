@@ -50,13 +50,22 @@ func (m *Model) View() tea.View {
 	w, h := m.Width, m.Height
 	m.zones, m.sel.text = nil, ""
 	if m.tooSmall() {
+		m.onDrag = nil
 		v.SetContent(drawTooSmall(w, h))
 		return v
 	}
 
 	entries := m.chatEntries()
 	ideH, chatH := drawLayout(h, drawChatCount(&m.chatLines, entries, w))
-	st := m.Sim.State()
+	if m.inspection != nil && h >= drawIDEH {
+		if m.inspection.height < 0 {
+			m.inspection.height = ideH
+		}
+		ideH = min(m.inspection.height, h-4)
+		chatH = h - ideH - 4
+	}
+	m.ideHeight = ideH
+	st := m.ideState()
 	var top string
 	hints := drawHintsPrompt
 	switch {
@@ -68,26 +77,37 @@ func (m *Model) View() tea.View {
 	if m.Panel == ideview.Agents {
 		hints = slices.Insert(slices.Clone(hints), 1, drawHintTab)
 	}
-	o := ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel, Now: m.Now, Busy: m.Status.Busy, Wrap: m.Wrap, Scroll: m.scroll}
+	o := ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel, Now: m.Now, Busy: m.Status.Busy, Wrap: m.Wrap, Scroll: m.scroll, Terms: m.termCache}
+	if m.inspection != nil {
+		o.Now, o.Busy = m.inspection.frame, m.inspection.busy
+	}
 	switch {
 	case ideH == 0: // too low for the IDE: the conversation alone
 		clear(m.scroll)
+		clear(m.termCache)
 	default:
 		ideview.Prune(st, o, w, ideH)
-		top = ideview.Render(st, o, w, ideH)
+		frame, bars := ideview.RenderWithScrollbars(st, o, w, ideH)
+		top = frame
 		m.zones = append(m.zones, zone{w: w, h: ideH,
 			click: func(x, y int) tea.Cmd {
 				path, dir := ideview.TreeAt(st, o, w, ideH, x, y)
 				switch {
 				case dir:
 					m.Sim.Toggle(path)
+					if m.inspection != nil {
+						m.inspection.state.Toggle(path)
+					}
 				case path != "":
-					m.Sim.View(path)
+					m.viewFile(path)
 				}
 				return m.clickIDE(ideview.AgentAt(st, o, w, ideH, x, y))
 			},
 			wheel: func(x, y, n int) { m.scrollIDE(ideview.Wheel(st, o, w, ideH, x, y, n)) },
 			text:  func(x, y int) image.Rectangle { return ideview.TextAt(st, o, w, ideH, x, y) }})
+		for _, bar := range bars {
+			m.zones = append(m.zones, m.scrollbarZone(bar))
+		}
 		if m.PanelFocus {
 			hints = drawHintsPanel
 		}
@@ -133,6 +153,7 @@ func (m *Model) View() tea.View {
 	var over *lipgloss.Layer
 	switch {
 	case m.Popup != nil:
+		m.onDrag = nil
 		box, hits := drawPopup(m.Popup, min(w-4, 100), h-2)
 		age := time.Duration(-1) // unknown: no drop
 		if !m.popupAt.IsZero() {
@@ -143,6 +164,7 @@ func (m *Model) View() tea.View {
 		m.zones = m.popupZones(m.Popup, hits, x, y) // nothing under a popup takes clicks
 	case m.ShowHelp:
 		box := renderHelp(w-4, h-2)
+		m.onDrag = nil
 		over = lipgloss.NewLayer(box).X((w - lipgloss.Width(box)) / 2).Y((h - lipgloss.Height(box)) / 2)
 		m.zones = nil // a click anywhere closes it
 	case !m.PanelFocus: // the keys go to the agents panel: no caret in the prompt

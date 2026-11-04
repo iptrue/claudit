@@ -3,14 +3,15 @@ package claude
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 )
 
 // claude -p cannot run /plugins: claudit manages the plugins through `claude plugin`.
@@ -50,8 +51,11 @@ func parsePlugins(data []byte, dir string) ([]Plugin, []Offer, error) {
 		return nil, nil, fmt.Errorf("claude plugin list: %w", err)
 	}
 	here := map[string]bool{}
+	dir = filepath.Clean(dir)
 	installed := slices.DeleteFunc(list.Installed, func(p Plugin) bool {
-		mine := p.Scope == "user" || p.ProjectPath != "" && filepath.Clean(p.ProjectPath) == filepath.Clean(dir)
+		path := filepath.Clean(p.ProjectPath)
+		same := path == dir || runtime.GOOS == "windows" && strings.EqualFold(path, dir)
+		mine := p.Scope == "user" || p.ProjectPath != "" && same
 		here[p.ID] = here[p.ID] || mine
 		return !mine
 	})
@@ -62,12 +66,16 @@ func parsePlugins(data []byte, dir string) ([]Plugin, []Offer, error) {
 // PluginCommand runs `claude plugin args...` in dir and returns what it printed. When it fails,
 // the error is what it said.
 func PluginCommand(dir string, args ...string) (string, error) {
-	cmd := exec.Command("claude", append([]string{"plugin"}, args...)...)
+	cmd := exec.CommandContext(context.Background(), claudeProgram, append([]string{"plugin"}, args...)...)
 	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // git asking for a password fails instead of drawing over the TUI
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	cleanup, err := startProcess(cmd)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	if err := cmd.Wait(); err != nil {
 		if said := strings.TrimSpace(cmp.Or(stderr.String(), stdout.String())); said != "" {
 			return "", errors.New(said)
 		}

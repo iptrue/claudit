@@ -33,7 +33,9 @@ type Model struct {
 	Input      Input
 	Popup      Popup // nil when none is open
 	Status     Status
-	ChatScroll int // chat lines scrolled up from the bottom; 0 follows the tail
+	wakeup     time.Time                 // confirmed next dynamic-loop wakeup; zero when none is pending
+	tasks      []protocol.BackgroundTask // the CLI's current unfinished background tasks
+	ChatScroll int                       // chat lines scrolled up from the bottom; 0 follows the tail
 	Width      int
 	Height     int
 	Now        time.Time // time of the last tick, for durations and spinners in the view
@@ -49,21 +51,25 @@ type Model struct {
 	Away       bool               // the terminal lost the focus: what needs the user is announced
 	StartModel string             // the model claude starts with as args or settings name it ("opus"), shown until a turn tells
 
-	chatMax   int            // largest useful ChatScroll, written by View
-	chatLines chatCache      // drawn chat entries, kept by View
-	zones     []zone         // what clicks act on, written by View
-	sel       selection      // the text the mouse drags over; View writes what it covers
-	scroll    ideview.Scroll // how far the wheel scrolled the IDE's panes; View forgets those it no longer draws
-	burst     wheelBurst     // the wheel events Filter held back since the last frame of a scroll
-	send      func(protocol.Outbound)
-	queue     []Popup          // requests waiting behind the open popup
-	behind    string           // the state of main while "waiting for you" covers it
-	clock     func() time.Time // the time of agent events; ticks bring their own
-	crew      crew             // what the model tracks about the agents beyond ide.Agent
-	agentMode string           // the permission mode the agent last reported; Status.Mode runs ahead of it
-	extraMode string           // a reported permission mode beyond modeCycle; shift+tab reaches it too
-	modeReqs  int              // SetMode requests sent, for their ids
-	modelReqs int              // SetModel requests sent, for their ids
+	chatMax    int               // largest useful ChatScroll, written by View
+	chatLines  chatCache         // drawn chat entries, kept by View
+	zones      []zone            // what clicks act on, written by View
+	sel        selection         // the text the mouse drags over; View writes what it covers
+	scroll     ideview.Scroll    // how far the wheel scrolled the IDE's panes; View forgets those it no longer draws
+	termCache  ideview.TermCache // wrapped row counts for the visible terminals
+	burst      wheelBurst        // the wheel events Filter held back since the last frame of a scroll
+	inspection *inspection       // the IDE the user is reading during the interaction cooldown
+	ideHeight  int               // IDE height in the last frame; -1 before the first frame
+	mouseDown  bool              // a held button protects the view until five seconds after release
+	send       func(protocol.Outbound)
+	queue      []Popup          // requests waiting behind the open popup
+	behind     string           // the state of main while "waiting for you" covers it
+	clock      func() time.Time // the time of agent events; ticks bring their own
+	crew       crew             // what the model tracks about the agents beyond ide.Agent
+	agentMode  string           // the permission mode the agent last reported; Status.Mode runs ahead of it
+	extraMode  string           // a reported permission mode beyond modeCycle; shift+tab reaches it too
+	modeReqs   int              // SetMode requests sent, for their ids
+	modelReqs  int              // SetModel requests sent, for their ids
 
 	btwReqs int               // side questions asked, for their ids
 	btwSaid []protocol.SideQA // the side questions answered in this conversation, for follow-ups
@@ -85,6 +91,7 @@ type Model struct {
 	interrupts   int                // Interrupts sent, for their ids
 	cmdTurn      bool               // a slash command started the turn: it is not in the chat to be cut
 	onRelease    func()             // what a press on an agent in the IDE or a Bash line of the chat does as the button lets go; a drag does nothing
+	onDrag       func(x, y int)     // a scrollbar holds the mouse until release
 	effortTurn   bool               // the turn runs /effort: claude's settings tell the level it set once it ends
 	quitAt       time.Time          // when quitKey last asked to be pressed again to quit
 	quitKey      string             // ctrl+c or esc
@@ -96,12 +103,13 @@ type Model struct {
 	usage        protocol.Usage     // what claude's process has taken, as of the last result
 	usageKnown   bool               // usage counts this process alone: false until its first result
 
-	limits  protocol.RateLimits // the rate-limit use claude reported last
-	cost    float64             // the session's cost in USD, as of the last turn
-	context protocol.Context    // how full main's context was at its last model call
-	windows map[string]int      // the context window of each model, from the turns' results
-	pending []string            // prompts typed while claude worked, sent when its turn ends
-	queueAt int                 // index in pending of the prompt taken into the prompt to edit; -1 for none
+	limits    protocol.RateLimits // the rate-limit use claude reported last
+	cost      float64             // the session's cost in USD, as of the last turn
+	context   protocol.Context    // how full main's context was at its last model call
+	windows   map[string]int      // the context window of each model, from the turns' results
+	pending   []string            // prompts typed while claude works, held until a quiet period or its turn ends
+	pendingAt time.Time           // when a prompt was last queued or its edit saved
+	queueAt   int                 // index in pending of the prompt taken into the prompt to edit; -1 for none
 
 	attached map[string]attachment // what the placeholders of long pastes and pictures stand for, by placeholder
 }
@@ -118,15 +126,16 @@ const (
 // ChatEntry is one item of the conversation: a prompt or a reply. What the agents do shows in
 // the IDE, not here.
 type ChatEntry struct {
-	Kind   EntryKind
-	Text   string
-	Queued bool           // a prompt typed while claude works, drawn under the chat until it goes to claude
-	Cut    bool           // a prompt whose turn the user interrupted: red, a ✗ for its arrow
-	Answer bool           // the user's answer to a question of a popup, drawn right under it
-	Bash   bool           // a reply's: what a Bash call of main's says it does, no reply of claude's
-	Call   string         // a Bash reply's: the id of its call, whose lines a click finds in main's terminal
-	At     time.Time      // when it was said, shown grey at the right; zero for not known
-	Tokens protocol.Usage // a prompt's: the tokens its turn took, zero for not known; not drawn while the count is wrong
+	Kind     EntryKind
+	Text     string
+	Queued   bool           // a prompt typed while claude works, drawn under the chat until it goes to claude
+	Cut      bool           // a prompt whose turn the user interrupted: red, a ✗ for its arrow
+	Answer   bool           // the user's answer to a question of a popup, drawn right under it
+	GoalEcho bool           // a locally displayed goal awaiting the CLI's confirmation
+	Bash     bool           // a reply's: what a Bash call of main's says it does, no reply of claude's
+	Call     string         // a Bash reply's: the id of its call, whose lines a click finds in main's terminal
+	At       time.Time      // when it was said, shown grey at the right; zero for not known
+	Tokens   protocol.Usage // a prompt's: the tokens its turn took, zero for not known; not drawn while the count is wrong
 }
 
 // Status feeds the status line.
@@ -140,6 +149,8 @@ type Status struct {
 	Usage   string  // rate-limit use, "5h 9% · 7d 58% · fable 3%", or the cost, "$0.0123", without limits
 	Elapsed string  // how long the current turn has run, e.g. "12s"; "" between turns
 	Agents  int     // subagents and workflow agents at work
+	Tasks   int     // live background tasks, from the CLI's complete snapshot
+	Wakeup  string  // time until the next confirmed wakeup, e.g. "7m5s"; "" when unknown
 	Replay  bool
 	Mode    string // permission mode: "default", "acceptEdits", "plan", …; "" until known
 	Alert   bool   // State says what went wrong, such as an API error: red
@@ -213,10 +224,12 @@ func New(send func(protocol.Outbound), cwd string, replay bool) *Model {
 		clock:  time.Now,
 		crew:   newCrew(),
 
-		known:    map[string]bool{},
-		scroll:   ideview.Scroll{},
-		attached: map[string]attachment{},
-		queueAt:  -1,
+		known:     map[string]bool{},
+		scroll:    ideview.Scroll{},
+		termCache: ideview.TermCache{},
+		attached:  map[string]attachment{},
+		queueAt:   -1,
+		ideHeight: -1,
 	}
 	m.addCommands(nil)
 	m.sync()
@@ -231,6 +244,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.onDrag = nil
 		m.Width, m.Height = msg.Width, msg.Height
 	case tickMsg:
 		m.tick(time.Time(msg))
@@ -254,10 +268,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.local("Exported to " + msg.path)
 		}
 	case tea.PasteMsg:
+		m.interact()
 		cmd = m.paste(msg.Content)
 	case imagesMsg:
 		m.pasted(msg)
 	case tea.KeyPressMsg:
+		m.interact()
 		cmd = m.handleKey(msg)
 	case tea.MouseWheelMsg:
 		if d := wheelNotch(msg); !m.tooSmall() && d != 0 {
@@ -268,14 +284,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.flushWheel()
 	case tea.MouseClickMsg:
 		if !m.tooSmall() && msg.Button == tea.MouseLeft {
+			m.interact()
+			m.mouseDown = true
+			m.onDrag = nil
 			m.sel = m.selectAt(msg.X, msg.Y)
 			cmd = m.click(msg.X, msg.Y)
 		}
 	case tea.MouseMotionMsg:
 		if msg.Button == tea.MouseLeft {
-			m.dragTo(msg.X, msg.Y)
+			m.interact()
+			if m.onDrag != nil {
+				m.onDrag(msg.X, msg.Y)
+			} else {
+				m.dragTo(msg.X, msg.Y)
+			}
 		}
 	case tea.MouseReleaseMsg:
+		m.onDrag = nil
+		if m.mouseDown {
+			m.interact()
+			m.mouseDown = false
+		}
 		if m.onRelease != nil && !m.sel.drag {
 			m.onRelease()
 		}
@@ -284,7 +313,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.FocusMsg:
 		m.Away = false
 	case tea.BlurMsg:
+		m.onDrag = nil
 		m.Away = true
+		m.mouseDown = false
 	}
 	m.sync()
 	if m.notice != "" {
@@ -329,6 +360,11 @@ func (m *Model) handleEvent(ev protocol.Event) {
 	root, now := m.Sim.State().Root, m.clock()
 	switch ev := ev.(type) {
 	case protocol.Init:
+		if m.session != "" && m.session != ev.SessionID {
+			m.Status.Tasks, m.wakeup = 0, time.Time{}
+			m.tasks = nil
+			m.inspection = nil
+		}
 		m.Status.Model, m.session = ev.Model, ev.SessionID
 		m.Status.Effort = cmp.Or(ev.Effort, m.Status.Effort) // claude -p (2.1.314) leaves it out
 		if ev.Cwd != "" {
@@ -355,6 +391,9 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		// Each model has an effort of its own. Asked only now: claude answers get_settings
 		// before a set_model sent ahead of it.
 		m.send(protocol.GetSettings{RequestID: fmt.Sprintf("settings-%d", m.modelReqs)})
+	case protocol.ServingModel:
+		m.Status.Model = ev.Model
+		m.Sim.FindAgent("main").Model = ev.Model
 	case protocol.Settings:
 		m.Status.Effort = ev.Effort
 	case protocol.SideAnswer:
@@ -390,6 +429,7 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		}
 	case protocol.ModelFallback:
 		m.Status.Model = ev.To // until the next turn's Init names the model again
+		m.Sim.FindAgent("main").Model = ev.To
 		// After what was said before it: the call that fell back has said nothing yet.
 		m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, At: now,
 			Text: cmp.Or(ev.Text, fmt.Sprintf("%s failed (%s): this turn runs on %s", ev.From, ev.Trigger, ev.To))})
@@ -427,6 +467,9 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			m.failure = f
 			break
 		}
+		if m.confirmGoal(ev.Text) {
+			break
+		}
 		m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, Text: ev.Text, At: now})
 	case protocol.ToolUse:
 		m.toolUse(ev, now)
@@ -444,6 +487,20 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.taskProgress(ev, now)
 	case protocol.TaskDone:
 		m.taskDone(ev, now)
+	case protocol.BackgroundTasks:
+		m.tasks, m.Status.Tasks = ev.Tasks, len(ev.Tasks)
+		if p, ok := m.Popup.(*QuitPopup); ok {
+			p.Tasks = ev.Tasks
+		}
+	case protocol.WakeupScheduled:
+		m.wakeup = ev.At
+	case protocol.CommandStarted:
+		if ev.WakeupSource == "loop_wakeup" && ev.ScheduledFor.Equal(m.wakeup) {
+			m.wakeup = time.Time{}
+		}
+		if !m.Status.Busy {
+			m.working("thinking")
+		}
 	case protocol.PermissionRequest:
 		var asker *ide.Agent
 		if a := m.agentByID(ev.AgentID); a != nil && a.Kind != ide.Main {
@@ -451,8 +508,11 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		}
 		m.Sim.Hold(ev.ToolUseID) // no edit on screen before the user permits it
 		p := newPopup(ev, root, asker)
+		if m.Status.State != "waiting for you" {
+			m.behind = m.Status.State
+		}
 		if m.Popup == nil {
-			m.Popup, m.behind = p, m.Status.State
+			m.Popup = p
 		} else {
 			m.queue = append(m.queue, p)
 		}
@@ -466,6 +526,11 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			m.Sim.FindAgent("main").Model = ev.Model
 		}
 	case protocol.Result:
+		if m.cmdTurn {
+			for i := range m.Chat {
+				m.Chat[i].GoalEcho = false
+			}
+		}
 		interrupted := m.interrupting && ev.IsError
 		m.interrupting = false
 		switch {
@@ -671,6 +736,10 @@ func (m *Model) working(state string) {
 
 func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 	if k.String() == "ctrl+c" {
+		if _, ok := m.Popup.(*QuitPopup); ok {
+			m.cancelQuit()
+			return nil
+		}
 		return m.ctrlC()
 	}
 	if m.Width > 0 && m.tooSmall() { // nothing on screen to aim the keys at
@@ -685,6 +754,8 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 	// A popup takes every key; what was being typed when it came up goes nowhere, so that a
 	// sentence never answers it.
 	switch p := m.Popup.(type) {
+	case *QuitPopup:
+		return m.quitPopupKey(p, k)
 	case *ResumePopup: // the user opened it: no typing runs on into it
 		return m.resumeKey(p, k.String())
 	case *PickPopup:
@@ -767,8 +838,8 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		}
 	case "esc":
 		switch {
-		case m.Sim.State().Pinned: // first back to every agent at work: a claude at work goes on
-			m.Sim.Pin("")
+		case m.ideState().Pinned: // first back to every agent at work: a claude at work goes on
+			m.pinView("")
 		case m.canInterrupt():
 			m.interrupt()
 		case len(m.Input.Text) > 0 || m.queueAt >= 0:
@@ -827,6 +898,9 @@ func tidy(text string) string {
 // claude runs stays out of the chat; what it prints joins it.
 func (m *Model) prompt(text string) tea.Cmd {
 	m.ChatScroll = 0
+	if m.inspection != nil {
+		m.inspection.height = -1 // reserve room for the submitted prompt without releasing the inspected content
+	}
 	m.remember(text)
 	cmd, isCmd := slash(text)
 	if isCmd {
@@ -841,10 +915,13 @@ func (m *Model) prompt(text string) tea.Cmd {
 	}
 	if m.Status.Busy && !m.Status.Replay { // it joins the chat once it goes to claude
 		m.pending = append(m.pending, text)
+		m.pendingAt = m.clock()
 		return nil
 	}
 	if !isCmd {
 		m.Chat = append(m.Chat, ChatEntry{Kind: UserEntry, Text: text, At: m.clock()})
+	} else if !m.Status.Replay {
+		m.echoGoal(text)
 	}
 	if m.Status.Replay {
 		m.local("replay: prompts are not sent")
@@ -875,7 +952,11 @@ func (m *Model) chatEntries() []ChatEntry {
 	}
 	for i, p := range m.pending {
 		if i != m.queueAt { // that one is in the prompt
-			entries = append(entries, ChatEntry{Kind: UserEntry, Text: p, Queued: true})
+			e := ChatEntry{Kind: UserEntry, Text: p, Queued: true}
+			if goal := goalCondition(p); goal != "" {
+				e.Kind, e.Text = CommandEntry, "Goal set: "+goal
+			}
+			entries = append(entries, e)
 		}
 	}
 	return entries
@@ -917,6 +998,7 @@ func (m *Model) keepQueued() bool {
 	} else {
 		m.pending[m.queueAt] = text
 	}
+	m.pendingAt = m.clock()
 	m.queueAt, m.Input = -1, Input{}
 	return text == ""
 }
@@ -957,17 +1039,26 @@ func (m *Model) flush() {
 	}
 	m.send(m.message(strings.Join(m.pending[:n], "\n\n")))
 	first, isCmd := slash(m.pending[0])
-	m.cmdTurn, m.effortTurn = isCmd, isCmd && first == "effort"
+	at := len(m.Chat)
+	if m.Status.Busy && at > 0 && m.Chat[at-1].Kind == AssistantEntry {
+		at-- // keep the streaming reply last, as local command output does
+	}
 	for _, p := range m.pending[:n] {
-		if !m.cmdTurn { // a command goes alone and stays out of the chat
-			m.Chat = append(m.Chat, ChatEntry{Kind: UserEntry, Text: p, At: m.clock()})
+		if !isCmd { // a command goes alone and stays out of the chat
+			m.Chat = slices.Insert(m.Chat, at, ChatEntry{Kind: UserEntry, Text: p, At: m.clock()})
+			at++
+		} else {
+			m.echoGoal(p)
 		}
 	}
 	m.pending = m.pending[n:]
 	if m.queueAt >= 0 {
 		m.queueAt -= n
 	}
-	m.Status.State, m.Status.Busy, m.Status.Alert = turnState(first, isCmd), true, false
+	if !m.Status.Busy { // forwarding text mid-turn leaves the active turn's state alone
+		m.cmdTurn, m.effortTurn = isCmd, isCmd && first == "effort"
+		m.Status.State, m.Status.Busy, m.Status.Alert = turnState(first, isCmd), true, false
+	}
 }
 
 // paste puts what the terminal pasted in the prompt: the pictures whose paths it is, a picture

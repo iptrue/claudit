@@ -32,6 +32,8 @@ func drawPopup(p Popup, maxWidth, maxHeight int) (string, []drawHit) {
 	var lines []string
 	var hits []drawHit
 	switch p := p.(type) {
+	case *QuitPopup:
+		lines, hits = drawQuit(p, inner, rows)
 	case *QuestionPopup:
 		lines, hits = drawQuestion(p, inner, rows)
 	case *PermissionPopup:
@@ -52,6 +54,41 @@ func drawPopup(p Popup, maxWidth, maxHeight int) (string, []drawHit) {
 		}
 	}
 	return strings.Join(drawBox(lines[:min(len(lines), rows)], inner, theme.Bright), "\n"), box // white: it waits for the user
+}
+
+func drawQuit(p *QuitPopup, w, rows int) ([]string, []drawHit) {
+	lines := []string{styleStrong.Render(ansi.Truncate(fmt.Sprintf("Quit with %d unfinished tasks?", len(p.Tasks)), w, "…"))}
+	if rows >= 6 {
+		lines = append(lines, "")
+	}
+	var body []string
+	for _, task := range p.Tasks {
+		name := task.Description
+		if name == "" {
+			name = task.ID
+		}
+		body = append(body, drawStyled(drawWrap("• "+name, w), styleFg.Render)...)
+	}
+	if len(body) == 0 {
+		body = []string{styleDim.Render("No unfinished tasks")}
+	}
+	gap := 0
+	if rows >= 5 {
+		gap = 1
+	}
+	if room := rows - len(lines) - 2 - gap; room > 0 {
+		shown, _ := drawScrolled(body, &p.Scroll, room, w)
+		lines = append(lines, shown...)
+		if gap > 0 {
+			lines = append(lines, "")
+		}
+	}
+	stay, exit := styleInverse.Render("[ Stay ]"), styleDim.Render("[ Exit ]")
+	if p.Exit {
+		stay, exit = styleDim.Render("[ Stay ]"), styleInverse.Render("[ Exit ]")
+	}
+	hits := []drawHit{{y: len(lines), x0: 0, x1: 8, at: 0}, {y: len(lines), x0: 10, x1: 18, at: 1}}
+	return append(lines, stay+"  "+exit, styleDim.Render(ansi.Truncate("←/→ choose · enter · esc stay · ↑/↓ scroll", w, "…"))), hits
 }
 
 func drawQuestion(p *QuestionPopup, w, rows int) ([]string, []drawHit) {

@@ -3,7 +3,6 @@ package ui
 import (
 	"image"
 	"image/color"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -113,13 +112,10 @@ func (m *Model) copySelection() tea.Cmd {
 	return copyText(text)
 }
 
-// copyText puts text on the clipboard through pbcopy, else through the terminal (OSC 52, which
-// iTerm2 lets through only when allowed).
+// copyText uses the system clipboard, falling back to the terminal's OSC 52 support.
 func copyText(text string) tea.Cmd {
 	return func() tea.Msg {
-		cmd := exec.Command("pbcopy")
-		cmd.Stdin = strings.NewReader(text)
-		if cmd.Run() == nil {
+		if writeClipboardText(text) == nil {
 			return nil
 		}
 		return tea.SetClipboard(text)()

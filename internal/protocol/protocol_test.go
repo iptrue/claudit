@@ -52,6 +52,7 @@ func TestParseDemoCounts(t *testing.T) {
 		"protocol.Result":            1,
 		"protocol.RateLimits":        1,
 		"protocol.Context":           7,
+		"protocol.ServingModel":      15,
 	}
 	if !reflect.DeepEqual(counts, want) {
 		t.Errorf("event counts:\n got %v\nwant %v", counts, want)
@@ -189,6 +190,8 @@ func TestParseMultiCounts(t *testing.T) {
 		"protocol.TaskStarted":       2,
 		"protocol.TaskProgress":      13,
 		"protocol.TaskDone":          4,
+		"protocol.BackgroundTasks":   2,
+		"protocol.ServingModel":      12,
 		"protocol.RateLimits":        1,
 		"protocol.Context":           7,
 		"protocol.Result":            2,
@@ -385,7 +388,7 @@ func TestParse(t *testing.T) {
 			[]Event{CLIReply{Text: "Current model: Haiku"}}},
 		{"model text is streamed, not repeated",
 			`{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-haiku-5-5","content":[{"type":"text","text":"hi"}]}}`,
-			nil},
+			[]Event{ServingModel{Model: "claude-haiku-5-5"}}},
 		{"conversation reset", `{"type":"conversation_reset","new_conversation_id":"c","trigger":"clear"}`, []Event{Reset{}}},
 		{"initialize answer",
 			`{"type":"control_response","response":{"subtype":"success","request_id":"init","response":{"commands":[{"name":"compact","description":"Free up context","argumentHint":"<instructions>"},{"name":""},` +

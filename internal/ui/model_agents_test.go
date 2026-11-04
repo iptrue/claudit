@@ -591,11 +591,19 @@ func TestModelPanelFollowsTheAgents(t *testing.T) {
 		t.Error("tab focused the files")
 	}
 	modelEvents(m, protocol.ToolUse{ID: "s1", Name: "Agent", Input: map[string]any{"description": "a"}})
+	if m.Panel != ideview.Files {
+		t.Fatal("a subagent replaced the panel during the interaction cooldown")
+	}
+	m.Update(tickMsg(modelT0.Add(5 * time.Second)))
 	if m.Panel != ideview.Agents {
 		t.Fatal("a subagent at work did not switch the panel to the agents")
 	}
 	modelPress(m, inputKey("tab"))
 	modelEvents(m, protocol.TaskDone{ToolUseID: "s1", Status: "completed"})
+	if m.Panel != ideview.Agents || !m.PanelFocus {
+		t.Fatal("task completion replaced the panel while it was being used")
+	}
+	m.Update(tickMsg(modelT0.Add(10 * time.Second)))
 	if m.Panel != ideview.Files || m.PanelFocus {
 		t.Errorf("all done: panel %v focus %v", m.Panel, m.PanelFocus)
 	}
@@ -796,7 +804,8 @@ func TestModelReplaysMultiFixture(t *testing.T) {
 			t.Errorf("chat entry %+v", e)
 		}
 	}
-	// All agents done: the left column is back on the files.
+	// All agents done: after the interaction cooldown, the left column is back on the files.
+	m.Update(tickMsg(m.Now.Add(5 * time.Second)))
 	if len(m.crew.tailers) != 0 || m.Panel != ideview.Files || m.Status.State != "idle" || m.Status.Busy {
 		t.Errorf("tailers %d panel %v status %+v", len(m.crew.tailers), m.Panel, m.Status)
 	}

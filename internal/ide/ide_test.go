@@ -153,6 +153,7 @@ func TestExplorerIgnored(t *testing.T) {
 	want := map[string]bool{"out": true, "out/a.bin": true, "src/x.log": true, "gen": true, "gen/deep": true, "gen/deep/y.go": true, "new.log": true}
 	for _, r := range st.Tree {
 		rel, _ := filepath.Rel(root, r.Path)
+		rel = filepath.ToSlash(rel)
 		if r.Ignored != want[rel] {
 			t.Errorf("%s ignored %v, want %v", rel, r.Ignored, want[rel])
 		}
@@ -340,10 +341,10 @@ func TestCaretsShift(t *testing.T) {
 
 func TestScrollback(t *testing.T) {
 	var term Term
-	for i := range 1005 {
+	for i := range 10005 {
 		term.Print(Output, fmt.Sprint(i))
 	}
-	if len(term.Lines) != 1000 || term.Lines[0].Text != "5" || term.Lines[999].Text != "1004" {
+	if len(term.Lines) != 10000 || term.Lines[0].Text != "5" || term.Lines[9999].Text != "10004" {
 		t.Fatalf("%d lines from %q", len(term.Lines), term.Lines[0].Text)
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pixelbender/claudit/internal/protocol"
@@ -114,15 +113,8 @@ type proc struct {
 // is called.
 func start(ctx context.Context, args, env []string, events chan<- protocol.Event) (*proc, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(ctx, "claude", append(slices.Clone(flags), args...)...)
+	cmd := exec.CommandContext(ctx, claudeProgram, append(slices.Clone(flags), args...)...)
 	cmd.Env = env
-	// A session of its own: neither claude nor the commands it runs (sudo, ssh, git asking for a
-	// password) has a terminal to draw over the TUI or to steal keys from.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	// Stopped, it hears what a closed terminal would tell it: a hangup to its group, so that it
-	// shuts down cleanly and what it runs goes too. What ignores the hangup is killed a second later.
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGHUP) }
-	cmd.WaitDelay = time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -138,7 +130,8 @@ func start(ctx context.Context, args, env []string, events chan<- protocol.Event
 		cancel()
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	cleanup, err := startProcess(cmd)
+	if err != nil {
 		cancel()
 		return nil, err
 	}
@@ -168,6 +161,7 @@ func start(ctx context.Context, args, env []string, events chan<- protocol.Event
 		})
 		<-stderrDone // Wait closes the pipes: finish reading them first
 		p.err = cmd.Wait()
+		cleanup()
 		close(p.done)
 	}()
 

@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -77,33 +76,12 @@ func sameEvents(t *testing.T, got, want []protocol.Event) {
 	}
 }
 
-const fakeClaude = `#!/bin/sh
-printf '%s\n' "$@" > "$FAKE_DIR/args"
-cat "$FAKE_FIXTURE"
-# one line far beyond bufio.Scanner's 64 KiB default
-printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"big","content":"'
-head -c 1048576 /dev/zero | tr '\0' 'a'
-printf '"}]}}\n'
-echo "warning: fake" >&2
-n=0
-while [ $n -lt 5 ] && IFS= read -r line; do
-	printf '%s\n' "$line" >> "$FAKE_DIR/stdin"
-	n=$((n+1))
-done
-exit 3
-`
-
 func TestSpawn(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(fakeClaude), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	dir := installClaudeHelper(t, "stream")
 	fixture, err := filepath.Abs(demo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_DIR", dir)
 	t.Setenv("FAKE_FIXTURE", fixture)
 
 	sess, err := Spawn(t.Context(), []string{"--model", "two words"})
@@ -184,20 +162,15 @@ func TestSpawn(t *testing.T) {
 
 // main relies on this: once ctx is cancelled, Events closes only after claude is gone.
 func TestSpawnCancelKills(t *testing.T) {
-	dir := t.TempDir()
-	script := "#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > \"$FAKE_DIR/child\"\necho $$ > \"$FAKE_DIR/pid\"\necho started >&2\nexec sleep 30\n"
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_DIR", dir)
+	dir := installClaudeHelper(t, "cancel")
 
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	sess, err := Spawn(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	next(t, sess.Events) // the script is running once it has printed
+	next(t, sess.Events) // the helper and its child are running once it has printed
 	data, err := os.ReadFile(filepath.Join(dir, "pid"))
 	if err != nil {
 		t.Fatal(err)
@@ -206,11 +179,7 @@ func TestSpawnCancelKills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// claude leads a session of its own, so a group too: it has no controlling terminal to draw
-	// over the TUI.
-	if pgid, err := syscall.Getpgid(pid); err != nil || pgid != pid {
-		t.Errorf("getpgid(%d) = %d, %v; want a group of its own", pid, pgid, err)
-	}
+	assertProcessIsolated(t, pid)
 
 	cancel()
 	timeout := time.After(5 * time.Second)
@@ -221,8 +190,8 @@ func TestSpawnCancelKills(t *testing.T) {
 			t.Fatal("Events not closed after cancel")
 		}
 	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("claude (pid %d) still exists after Events closed: kill(0) = %v", pid, err)
+	if processExists(pid) {
+		t.Fatalf("claude (pid %d) still exists after Events closed", pid)
 	}
 	// What claude runs goes with it, as when a closed terminal hangs up on them all.
 	data, err = os.ReadFile(filepath.Join(dir, "child"))
@@ -230,44 +199,20 @@ func TestSpawnCancelKills(t *testing.T) {
 		t.Fatal(err)
 	}
 	child, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-	for deadline := time.Now().Add(2 * time.Second); syscall.Kill(child, 0) == nil; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(2 * time.Second); processExists(child); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			syscall.Kill(child, syscall.SIGKILL)
+			killTestProcess(child)
 			t.Fatalf("claude's child (pid %d) outlives it", child)
 		}
 	}
 }
 
-// Each run says which it is; the first leaves a grandchild holding its output open, the second
-// exits after one message.
-const fakeResumable = `#!/bin/sh
-n=$(($(cat "$FAKE_DIR/n" 2>/dev/null || echo 0) + 1))
-echo $n > "$FAKE_DIR/n"
-printf '%s\n' "$@" > "$FAKE_DIR/args$n"
-printf '{"type":"system","subtype":"status","permissionMode":"run%s"}\n' $n
-if [ $n = 1 ]; then
-	sleep 30 &
-	echo $! > "$FAKE_DIR/grandchild"
-fi
-i=0
-while IFS= read -r line; do
-	printf '%s\n' "$line" >> "$FAKE_DIR/stdin$n"
-	i=$((i+1))
-	[ $n = 2 ] && [ $i = 3 ] && exit 4
-done
-`
-
 func TestSpawnResume(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(fakeResumable), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_DIR", dir)
+	dir := installClaudeHelper(t, "resume")
 	t.Cleanup(func() {
 		if data, err := os.ReadFile(filepath.Join(dir, "grandchild")); err == nil {
 			pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-			syscall.Kill(pid, syscall.SIGKILL)
+			killTestProcess(pid)
 		}
 	})
 

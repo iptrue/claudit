@@ -92,15 +92,15 @@ func agentTree(st *ide.State) []treeRow {
 	return rows
 }
 
-// agentsView is the agents tree and its first row in view, ih rows high: the highlighted row is
-// kept in view, else the camera's.
+// agentsView is the agents tree and its first row in view, ih rows high: near the highlighted
+// row, else the camera's, or where the user scrolled.
 func agentsView(st *ide.State, cam *ide.Agent, o Options, ih int) ([]treeRow, int) {
 	tree := agentTree(st)
 	cur := slices.IndexFunc(tree, func(r treeRow) bool { return r.agent == cam })
 	if i := slices.IndexFunc(tree, func(r treeRow) bool { return r.agent != nil && r.agent.Key == o.Sel }); o.Focused && i >= 0 {
 		cur = i
 	}
-	return tree, scrollTop(cur, len(tree), ih)
+	return tree, scrolled(scrollTop(cur, len(tree), ih), o.Scroll[agentsPaneKey], max(0, len(tree)-ih))
 }
 
 func agentsPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {

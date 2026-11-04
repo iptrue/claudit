@@ -130,6 +130,8 @@ type Term struct {
 	Running   bool      // a command is executing: the live prompt line is replaced by a spinner
 	Spinner   int       // spinner frame
 	RunAt     time.Time // when the running command started
+	bytes     int       // bytes of text kept in Lines
+	kept      int       // line count used by the byte accounting
 }
 
 // TermLine is one line of terminal scrollback.

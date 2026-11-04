@@ -183,6 +183,42 @@ func TestClassifySearch(t *testing.T) {
 	checkClassified(t, "rg -n x _posts", "_posts/2024-01-15-x.md:3:x", false, []string{"hit _posts/2024-01-15-x.md " + strings.Repeat("^", len("_posts/2024-01-15-x.md:3:")) + "|_posts/2024-01-15-x.md:3:x"})
 }
 
+func TestClassifyWindowsPaths(t *testing.T) {
+	for _, path := range []string{`C:\work\calc.go`, `C:/work/calc.go`, `C:\my work\calc.go`, `\\server\share\calc.go`} {
+		if got := classify(`cat "`+path+`"`, []string{"package calc"}, false)[0]; got.Kind != ide.Code || got.Lang != path {
+			t.Errorf("viewer %q: %+v", path, got)
+		}
+		for _, sep := range []string{":", "-"} {
+			prefix := path + sep + "12" + sep
+			line := prefix + "func Div() {"
+			got := classify("rg -n Div .", []string{line}, false)[0]
+			want := ide.TermLine{Kind: ide.Match, Text: line, Lang: path, Prefix: len([]rune(prefix))}
+			if got != want {
+				t.Errorf("%q: %+v, want %+v", line, got, want)
+			}
+		}
+	}
+}
+
+func TestCommandPaths(t *testing.T) {
+	for _, tc := range []struct{ cmd, path string }{
+		{`cat C:\work\calc.go`, `C:\work\calc.go`},
+		{`cat "C:\my work\calc.go"`, `C:\my work\calc.go`},
+		{`cat '\\server\share\calc.go'`, `\\server\share\calc.go`},
+		{`cat \\server\share\calc.go`, `\\server\share\calc.go`},
+		{`cat "\\server\my share\calc.go"`, `\\server\my share\calc.go`},
+		{`cat src/my\ file.go`, `src/my file.go`},
+		{`cat src/back\\slash.go`, `src/back\slash.go`},
+		{`cat "src/back\\slash.go"`, `src/back\slash.go`},
+	} {
+		got := commands(tc.cmd)
+		want := [][][]string{{{"cat", tc.path}}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("commands(%q) = %q, want %q", tc.cmd, got, want)
+		}
+	}
+}
+
 // Other output stays plain, red when the command failed.
 func TestClassifyPlain(t *testing.T) {
 	checkClassified(t, "go test ./...", "ok  \tcalc\t0.1s\n--- FAIL: TestDiv", false, []string{"out|ok  \tcalc\t0.1s", "out|--- FAIL: TestDiv"})

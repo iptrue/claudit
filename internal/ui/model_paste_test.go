@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
 	"image/png"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -98,7 +101,7 @@ func TestPasteDroppedPicturesAttach(t *testing.T) {
 	a := modelPastePNG(t, dir, "shot one.png", 4, 3)
 	b := modelPastePNG(t, dir, "b.PNG", 2, 2)
 	modelPress(m, inputTyped("Look ")...)
-	modelPasteRun(m, strings.ReplaceAll(a, " ", `\ `)+" '"+b+"' ")
+	modelPasteRun(m, strings.ReplaceAll(filepath.ToSlash(a), " ", `\ `)+" '"+b+"' ")
 	if got := string(m.Input.Text); got != "Look [Image #1] [Image #2] " {
 		t.Fatalf("prompt %q", got)
 	}
@@ -156,6 +159,10 @@ func TestPasteShellWords(t *testing.T) {
 		{`/a\ b.png /c.png`, []string{"/a b.png", "/c.png"}},
 		{`'/a b.png' "/c d.png"`, []string{"/a b.png", "/c d.png"}},
 		{`'/a b.png`, nil},
+		{`C:\Users\me\shot.png`, []string{`C:\Users\me\shot.png`}},
+		{`"C:\Users\Иван\shot one.png" "D:\two.png"`, []string{`C:\Users\Иван\shot one.png`, `D:\two.png`}},
+		{`\\server\share\shot.png`, []string{`\\server\share\shot.png`}},
+		{`"\\server\share\shot one.png" /a\ b.png`, []string{`\\server\share\shot one.png`, "/a b.png"}},
 		{"  ", nil},
 	} {
 		if got := shellWords(tt.in); !slices.Equal(got, tt.want) {
@@ -164,10 +171,26 @@ func TestPasteShellWords(t *testing.T) {
 	}
 }
 
-func TestPasteLargePictureShrinks(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sips is macOS's")
+func TestPasteWindowsShellWords(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want []string
+	}{
+		{`C:/shots/one\ two.png`, []string{`C:/shots/one two.png`}},
+		{`"C:\shots\one two.png"`, []string{`C:\shots\one two.png`}},
+		{`"\\server\shots\one two.png"`, []string{`\\server\shots\one two.png`}},
+		{`shots\one.png`, []string{`shots\one.png`}},
+		{`"shots\one two.png"`, []string{`shots\one two.png`}},
+		{`/shots/one\ two.png`, []string{`/shots/one two.png`}},
+	} {
+		if got := splitPastePaths(tt.in, true); !slices.Equal(got, tt.want) {
+			t.Errorf("Windows paths %q = %q, want %q", tt.in, got, tt.want)
+		}
 	}
+}
+
+func TestPasteLargePictureShrinks(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // Resizing must work without external programs.
 	dir := t.TempDir()
 	small, err := loadImage(modelPastePNG(t, dir, "small.png", 300, 200))
 	if err != nil || small.Media != "image/png" {
@@ -178,7 +201,100 @@ func TestPasteLargePictureShrinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(big.Data))
-	if err != nil || big.Media != "image/jpeg" || max(cfg.Width, cfg.Height) != imageSide {
+	if err != nil || big.Media != "image/jpeg" || cfg.Width != 2000 || cfg.Height != 666 || len(big.Data) > imageBytes {
 		t.Fatalf("big: %v %q %dx%d", err, big.Media, cfg.Width, cfg.Height)
+	}
+}
+
+func TestPasteOversizedFormatsShrinkWithoutPrograms(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, format := range []string{"jpeg", "gif"} {
+		t.Run(format, func(t *testing.T) {
+			var b bytes.Buffer
+			im := image.NewPaletted(image.Rect(0, 0, 100, 2500), color.Palette{color.Black, color.White})
+			var err error
+			if format == "gif" {
+				err = gif.Encode(&b, im, nil)
+			} else {
+				err = jpeg.Encode(&b, im, nil)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "image."+format)
+			if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadImage(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, _, err := image.DecodeConfig(bytes.NewReader(got.Data))
+			if err != nil || cfg.Width != 80 || cfg.Height != 2000 || len(got.Data) > imageBytes {
+				t.Fatalf("resized: %v %dx%d, %d bytes", err, cfg.Width, cfg.Height, len(got.Data))
+			}
+		})
+	}
+}
+
+func TestPasteByteLimitReducesQualityWithoutUpscaling(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	im := image.NewRGBA(image.Rect(0, 0, 2000, 2000))
+	rng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < len(im.Pix); i += 4 {
+		im.Pix[i], im.Pix[i+1], im.Pix[i+2], im.Pix[i+3] = byte(rng.Uint32()), byte(rng.Uint32()), byte(rng.Uint32()), 255
+	}
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, im, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if b.Len() <= imageBytes {
+		t.Fatal("fixture must exceed the upload limit")
+	}
+	path := filepath.Join(t.TempDir(), "noise.jpg")
+	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadImage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(got.Data))
+	if err != nil || cfg.Width != 2000 || cfg.Height != 2000 || len(got.Data) > imageBytes {
+		t.Fatalf("resized: %v %dx%d, %d bytes", err, cfg.Width, cfg.Height, len(got.Data))
+	}
+}
+
+func TestPasteWebPDimensionsAreLimited(t *testing.T) {
+	// Solid orange, lossless WebP fixtures: 1x1 and 3000x1000.
+	for _, tt := range []struct {
+		data   string
+		width  int
+		height int
+		media  string
+	}{
+		{"UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAdQwMIXpP+BiOh/AAA=", 1, 1, "image/webp"},
+		{"UklGRqIAAABXRUJQVlA4TJUAAAAvt8v5AAdQwMIXpP8BAUnS//9kRP8z/vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//HBAA=", 2000, 666, "image/jpeg"},
+	} {
+		data, err := base64.StdEncoding.DecodeString(tt.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := loadImageData(data).(imagesMsg)
+		if got.err != nil || len(got.images) != 1 {
+			t.Fatalf("WebP: %v, %d images", got.err, len(got.images))
+		}
+		im := got.images[0]
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(im.Data))
+		if err != nil || cfg.Width != tt.width || cfg.Height != tt.height || im.Media != tt.media || len(im.Data) > imageBytes {
+			t.Fatalf("WebP: %v %dx%d %s, %d bytes", err, cfg.Width, cfg.Height, im.Media, len(im.Data))
+		}
+	}
+}
+
+func TestPasteInvalidImageDoesNotAttach(t *testing.T) {
+	got := loadImageData([]byte("\x89PNG\r\n\x1a\ninvalid image")).(imagesMsg)
+	if got.err == nil || len(got.images) != 0 {
+		t.Fatalf("invalid image: err=%v, images=%d", got.err, len(got.images))
 	}
 }

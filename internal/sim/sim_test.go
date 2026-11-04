@@ -764,12 +764,12 @@ func TestCatchUp(t *testing.T) {
 func TestCaps(t *testing.T) {
 	s, root := setup(t, nil)
 	s.ToolUse("main", "b", "Bash", map[string]any{"command": strings.Repeat("x", 5000)})
-	s.ToolResult("b", strings.Repeat("out\n", 5000), false)
+	s.ToolResult("b", strings.Repeat("out\n", 15000), false)
 	end := play(s, t0, time.Minute, nil)
 	if d := end.Sub(t0); s.Busy() || d > 2300*time.Millisecond {
 		t.Fatalf("bash took %v", d)
 	}
-	if n := len(mainAgent(s).Term.Lines); n != 1000 {
+	if n := len(mainAgent(s).Term.Lines); n != 10000 {
 		t.Fatalf("scrollback %d", n)
 	}
 

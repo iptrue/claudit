@@ -1,21 +1,12 @@
 package ui
 
 import (
-	"bytes"
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"image"
-	_ "image/gif" // registered for image.DecodeConfig
-	_ "image/jpeg"
-	_ "image/png"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"runtime"
-	"slices"
-	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -119,15 +110,28 @@ func imagePaths(s string) []string {
 // shellWords splits s on blanks as a shell does: not on escaped or quoted ones. An unclosed quote
 // leaves no words.
 func shellWords(s string) []string {
+	return splitPastePaths(s, runtime.GOOS == "windows")
+}
+
+func splitPastePaths(s string, windows bool) []string {
 	var words []string
 	var w []rune
 	var quote rune
 	esc := false
-	for _, r := range s + " " {
+	windowsPath := false
+	for i, r := range s + " " {
+		if len(w) == 0 && quote == 0 && !esc && !unicode.IsSpace(r) {
+			start := strings.TrimLeft(s[i:], `"'`)
+			drivePath := len(start) >= 3 &&
+				((start[0] >= 'A' && start[0] <= 'Z') || (start[0] >= 'a' && start[0] <= 'z')) &&
+				start[1] == ':'
+			windowsPath = strings.HasPrefix(start, `\\`) || drivePath && start[2] == '\\' ||
+				windows && !strings.HasPrefix(start, "/") && !(drivePath && start[2] == '/')
+		}
 		switch {
 		case esc:
 			w, esc = append(w, r), false
-		case r == '\\' && quote != '\'':
+		case r == '\\' && quote != '\'' && !windowsPath:
 			esc = true
 		case quote != 0 && r == quote:
 			quote = 0
@@ -185,78 +189,32 @@ func pastedImage(s string) []byte {
 
 // loadImageData reads a picture held in memory for the prompt.
 func loadImageData(data []byte) tea.Msg {
-	f, err := os.CreateTemp("", "claudit-*")
+	im, err := imageFromData(data)
 	if err != nil {
 		return imagesMsg{err: err}
 	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return imagesMsg{err: err}
-	}
-	im, err := loadImage(f.Name())
-	return imagesMsg{images: []protocol.Image{im}, err: err}
+	return imagesMsg{images: []protocol.Image{im}}
 }
 
 // pasteClipboard reads the picture on the clipboard, as ctrl+v does in Claude Code: a terminal
 // pastes only text.
 func pasteClipboard() tea.Msg {
-	if runtime.GOOS != "darwin" {
-		return imagesMsg{err: errors.New("ctrl+v pastes pictures on macOS only")}
-	}
-	f, err := os.CreateTemp("", "claudit-*.png")
+	data, err := clipboardImage()
 	if err != nil {
 		return imagesMsg{err: err}
 	}
-	f.Close()
-	defer os.Remove(f.Name())
-	err = exec.Command("osascript",
-		"-e", "set png_data to (the clipboard as «class PNGf»)",
-		"-e", fmt.Sprintf("set fp to open for access POSIX file %q with write permission", f.Name()),
-		"-e", "write png_data to fp",
-		"-e", "close access fp").Run()
-	if err != nil {
-		return imagesMsg{err: errors.New("no picture on the clipboard")}
-	}
-	im, err := loadImage(f.Name())
-	return imagesMsg{images: []protocol.Image{im}, err: err}
+	return loadImageData(data)
 }
 
-// loadImage reads a picture for claude, scaled down by sips when it is too large to go as it is.
+// loadImage reads a picture for claude, scaling it down when it exceeds the upload limits.
 func loadImage(path string) (protocol.Image, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return protocol.Image{}, err
 	}
-	media := http.DetectContentType(data)
-	if !slices.Contains([]string{"image/png", "image/jpeg", "image/gif", "image/webp"}, media) {
-		return protocol.Image{}, fmt.Errorf("%s is not a picture claude reads", path)
-	}
-	side := imageSide
-	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil { // no decoder for webp
-		side = max(cfg.Width, cfg.Height)
-	}
-	if len(data) <= imageBytes && side <= imageSide {
-		return protocol.Image{Media: media, Data: data}, nil
-	}
-	return shrink(path, min(side, imageSide)) // sips scales up as well as down
-}
-
-// shrink scales a picture to side pixels at most as a JPEG, which keeps it under imageBytes.
-func shrink(path string, side int) (protocol.Image, error) {
-	f, err := os.CreateTemp("", "claudit-*.jpg")
+	im, err := imageFromData(data)
 	if err != nil {
-		return protocol.Image{}, err
+		return protocol.Image{}, fmt.Errorf("%s: %w", path, err)
 	}
-	f.Close()
-	defer os.Remove(f.Name())
-	out, err := exec.Command("sips", "-Z", strconv.Itoa(side), "-s", "format", "jpeg", path, "--out", f.Name()).CombinedOutput()
-	if err != nil {
-		return protocol.Image{}, fmt.Errorf("sips: %v: %s", err, bytes.TrimSpace(out))
-	}
-	data, err := os.ReadFile(f.Name())
-	return protocol.Image{Media: "image/jpeg", Data: data}, err
+	return im, nil
 }

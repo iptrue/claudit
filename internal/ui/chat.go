@@ -79,6 +79,9 @@ func drawChatLines(cache *chatCache, entries []ChatEntry, tw, aw int) (lines, ti
 		if len(drawn) == 0 {
 			continue
 		}
+		if _, goal := chatGoal(e); goal {
+			e.Kind = UserEntry // use prompt spacing without changing the stored entry
+		}
 		prompt := e.Kind == UserEntry && !e.Answer && prev.Kind != UserEntry && prev.Kind != CaretEntry
 		if (prompt || prev.Answer) && len(lines) > 0 {
 			lines, times, owners = append(lines, ""), append(times, ""), append(owners, -1)
@@ -126,11 +129,18 @@ func renderChat(cache *chatCache, entries []ChatEntry, width, height, scroll int
 // while queued), a reply as markdown, the CLI's own reply as laid out, all after a "›". No line is
 // blank: every line of the chat says something.
 func drawEntry(e ChatEntry, w int) []string {
+	goal, isGoal := chatGoal(e)
+	if isGoal {
+		e.Kind, e.Text = UserEntry, goal
+	}
 	switch e.Kind {
 	case UserEntry:
 		st, arrow := styleYou, "› "
+		if isGoal {
+			st = lipgloss.NewStyle().Foreground(theme.Orange)
+		}
 		switch {
-		case e.Queued:
+		case e.Queued && !isGoal:
 			st = styleDim
 		case e.Cut:
 			st, arrow = styleErr, "✗ "
@@ -177,6 +187,14 @@ func drawEntry(e ChatEntry, w int) []string {
 		return []string{"  " + lipgloss.NewStyle().Foreground(drawAgentColor(0)).Render(e.Text)}
 	}
 	return nil
+}
+
+func chatGoal(e ChatEntry) (string, bool) {
+	if e.Kind != CommandEntry || !strings.Contains(e.Text, "Goal set:") {
+		return "", false
+	}
+	text, ok := strings.CutPrefix(strings.TrimSpace(drawClean(e.Text)), "Goal set:")
+	return tidy(text), ok
 }
 
 // drawDense drops the blank lines.
@@ -292,6 +310,13 @@ func renderStatus(st Status, hints []string, width int) string {
 	if st.Replay {
 		parts = append(parts, part{styleFg.Render("replay"), 4})
 	}
+	if st.Tasks > 0 {
+		label := "tasks"
+		if st.Tasks == 1 {
+			label = "task"
+		}
+		parts = append(parts, part{lipgloss.NewStyle().Foreground(theme.Blue).Render(fmt.Sprintf("%d %s", st.Tasks, label)), 0})
+	}
 	var steady, moving []string
 	for turn := 1; ; turn++ {
 		steady = steady[:0]
@@ -304,7 +329,14 @@ func renderStatus(st Status, hints []string, width int) string {
 		parts = slices.DeleteFunc(parts, func(p part) bool { return p.drop == turn })
 	}
 	spin := styleAccent.Render(drawSpinner[st.Frame%len(drawSpinner)]) + " "
-	switch state := drawOneLine(st.State); {
+	state := drawOneLine(st.State)
+	if state == "idle" && (st.Tasks > 0 || st.Wakeup != "") {
+		state = "waiting"
+		if st.Wakeup != "" {
+			state += " " + st.Wakeup
+		}
+	}
+	switch {
 	case st.Busy:
 		s := spin + drawShimmer(state, st.Frame, theme.Fg)
 		if st.Elapsed != "" {

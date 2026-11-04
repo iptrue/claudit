@@ -7,11 +7,36 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pixelbender/claudit/internal/ideview"
 	"github.com/pixelbender/claudit/internal/theme"
 )
+
+func TestChatGoalConfirmation(t *testing.T) {
+	entries := []ChatEntry{
+		{Kind: AssistantEntry, Text: "Ready"},
+		{Kind: CommandEntry, Text: "\x1b[32mGoal set: build **the app**\x1b[0m"},
+	}
+	out, _, _ := renderChat(new(chatCache), entries, 60, 3, 0)
+	rows := strings.Split(ansi.Strip(out), "\n")
+	if strings.TrimSpace(rows[1]) != "" || strings.TrimSpace(rows[2]) != "› Build **the app**" {
+		t.Fatalf("goal is not displayed as a plain user prompt:\n%s", ansi.Strip(out))
+	}
+	want := lipgloss.NewStyle().Foreground(theme.Orange).Render("› Build **the app**")
+	if !strings.Contains(out, want) {
+		t.Fatal("the goal confirmation is not orange")
+	}
+	if entries[1].Kind != CommandEntry || !strings.Contains(entries[1].Text, "Goal set:") {
+		t.Fatal("displaying a goal mutated the conversation history")
+	}
+	for _, kind := range []EntryKind{UserEntry, AssistantEntry} {
+		if out := strings.Join(drawEntry(ChatEntry{Kind: kind, Text: "Goal set: example"}, 60), "\n"); !strings.Contains(ansi.Strip(out), "Goal set:") {
+			t.Fatal("a regular message lost its literal prefix")
+		}
+	}
+}
 
 // drawCheckSize fails unless s is exactly h lines of exactly w cells.
 func drawCheckSize(t *testing.T, s string, w, h int) {

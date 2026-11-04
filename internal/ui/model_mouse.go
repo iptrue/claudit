@@ -92,7 +92,10 @@ func (m *Model) flushWheel() tea.Cmd {
 // wheel at (x, y) scrolls d notches down (up when d < 0) what has the keys: the open popup, the
 // completions; else a pane of the IDE there, else the chat.
 func (m *Model) wheel(x, y, d int) {
+	m.interact()
 	switch p := m.Popup.(type) {
+	case *QuitPopup:
+		p.Scroll += d * wheelStep
 	case *PermissionPopup:
 		p.Scroll += d * wheelStep
 	case *BtwPopup:
@@ -134,6 +137,22 @@ func (m *Model) scrollIDE(key string, back int) {
 	default:
 		m.scroll[key] = back
 	}
+}
+
+func (m *Model) scrollbarZone(bar ideview.Scrollbar) zone {
+	return zone{x: bar.X, y: bar.Y, w: 1, h: bar.Height, click: func(_, y int) tea.Cmd {
+		m.onRelease = nil
+		top, n := bar.Thumb()
+		y += bar.Y
+		grab := n / 2
+		if y >= top && y < top+n {
+			grab = y - top
+		} else {
+			m.scrollIDE(bar.Key, bar.Scroll(y, grab))
+		}
+		m.onDrag = func(_, y int) { m.scrollIDE(bar.Key, bar.Scroll(y, grab)) }
+		return nil
+	}}
 }
 
 // click acts on a left click at (x, y): the topmost zone there takes it. Elsewhere it closes the
@@ -180,20 +199,26 @@ func (m *Model) clickChat(call string, o ideview.Options, w, h int) tea.Cmd {
 // showCall shows main alone, the camera pinned on it, its terminal scrolled to the lines of Bash
 // call call. A call the terminal holds no line of, not typed yet or long gone, shows nothing.
 func (m *Model) showCall(call string, o ideview.Options, w, h int) {
-	main := m.Sim.FindAgent("main")
+	if live := m.Sim.FindAgent("main"); live != nil && slices.ContainsFunc(live.Term.Lines, func(l ide.TermLine) bool { return l.Call == call }) {
+		m.refreshInspection()
+	}
+	main := m.ideState().Agents[0]
 	if main == nil || !slices.ContainsFunc(main.Term.Lines, func(l ide.TermLine) bool { return l.Call == call }) {
 		return
 	}
 	m.PanelSel = "main"
 	m.pinSelected()
-	m.scrollIDE(ideview.TermScroll(m.Sim.State(), o, w, h, "main", call))
+	if m.inspection != nil {
+		main.Focus = ide.Terminal
+	}
+	m.scrollIDE(ideview.TermScroll(m.ideState(), o, w, h, "main", call))
 }
 
 // pickAgent shows the agent with that key alone, the camera pinned on it; alone already, every
 // agent at work again.
 func (m *Model) pickAgent(key string) {
-	if st := m.Sim.State(); st.Pinned && st.Camera == key {
-		m.Sim.Pin("")
+	if st := m.ideState(); st.Pinned && st.Camera == key {
+		m.pinView("")
 		return
 	}
 	m.PanelSel = key
@@ -232,6 +257,11 @@ func (m *Model) popupZones(p Popup, hits []drawHit, x, y int) []zone {
 // several may be), a button pressed, a conversation resumed.
 func (m *Model) clickPopup(p Popup, at int) tea.Cmd {
 	switch p := p.(type) {
+	case *QuitPopup:
+		if at == 1 {
+			return tea.Quit
+		}
+		m.cancelQuit()
 	case *QuestionPopup:
 		q := &p.Questions[p.Current]
 		q.Cursor = at

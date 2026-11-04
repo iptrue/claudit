@@ -107,7 +107,7 @@ var drawHelpRows = [][2]string{
 	{"ctrl+v", "paste the picture on the clipboard; drop picture files to attach them"},
 	{"↑ ↓", "previous prompts; queued prompts first, edited in their place"},
 	{"/", "slash commands: ↑/↓ pick, tab complete, enter run; a typo is held back, enter again sends it"},
-	{"esc", "show every agent again, else interrupt claude, else clear the prompt, else quit (twice)"},
+	{"esc", "show every agent again, else interrupt claude, else clear the prompt, else quit (twice; confirms unfinished tasks)"},
 	{"shift+tab", "permission mode: manual → accept edits → plan → auto; over a request, also answers what the new mode allows"},
 	{"pgup pgdn", "scroll the conversation (or the wheel)"},
 	{"drag", "select text in the conversation or a pane; letting go copies it"},

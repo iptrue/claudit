@@ -250,3 +250,37 @@ func slash(text string) (cmd string, ok bool) {
 	cmd, _, _ = strings.Cut(rest, " ")
 	return cmd, true
 }
+
+// goalCondition is a goal-setting command's text, excluding status and clear commands.
+func goalCondition(text string) string {
+	cmd, ok := slash(text)
+	if !ok || cmd != "goal" {
+		return ""
+	}
+	condition := strings.TrimSpace(strings.TrimPrefix(text, "/goal"))
+	switch strings.ToLower(condition) {
+	case "", "clear", "stop", "off", "reset", "none", "cancel":
+		return ""
+	}
+	return tidy(condition)
+}
+
+func (m *Model) echoGoal(text string) {
+	if goal := goalCondition(text); goal != "" {
+		m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, Text: "Goal set: " + goal, At: m.clock(), GoalEcho: true})
+	}
+}
+
+// confirmGoal replaces the local echo while preserving the time the user sent it.
+func (m *Model) confirmGoal(text string) bool {
+	if _, ok := chatGoal(ChatEntry{Kind: CommandEntry, Text: text}); !ok {
+		return false
+	}
+	for i := len(m.Chat) - 1; i >= 0; i-- {
+		if m.Chat[i].GoalEcho {
+			m.Chat[i].Text, m.Chat[i].GoalEcho = text, false
+			return true
+		}
+	}
+	return false
+}

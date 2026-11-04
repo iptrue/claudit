@@ -17,9 +17,9 @@ import (
 var (
 	hunkHead   = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@`) // with the lines it takes of each side
 	commitHead = regexp.MustCompile(`^commit [0-9a-f]{7,40}\b`)
-	hitHead    = regexp.MustCompile(`^([^:\s][^:]*?):(\d+):`) // "path:12:" of a hit
-	aroundHead = regexp.MustCompile(`^([^:\s][^:]*?)-(\d+)-`) // "path-12-" of a line around one
-	numHead    = regexp.MustCompile(`^\d+:`)                  // "12:" of a hit of a search in one file
+	hitHead    = regexp.MustCompile(`^((?:[A-Za-z]:[\\/])?[^:\s][^:]*?):(\d+):`) // "path:12:" of a hit, including a Windows drive
+	aroundHead = regexp.MustCompile(`^((?:[A-Za-z]:[\\/])?[^:\s][^:]*?)-(\d+)-`) // "path-12-" of a line around one
+	numHead    = regexp.MustCompile(`^\d+:`)                                     // "12:" of a hit of a search in one file
 )
 
 // diffMeta are the starts of a diff's or a log's header lines.
@@ -359,7 +359,7 @@ func firstFile(prog string, args []string) string {
 // fileName reports whether a word of a command line can name a file: it has letters and none of
 // what patterns, scripts and redirections have.
 func fileName(w string) bool {
-	return !strings.ContainsAny(w, " *?{}[]()$<>|;&'\"=,!") && strings.ContainsFunc(w, unicode.IsLetter)
+	return !strings.ContainsAny(w, "*?{}[]()$<>|;&'\"=,!") && strings.ContainsFunc(w, unicode.IsLetter)
 }
 
 // commands splits a command line into its commands (at &&, ||, ; and line breaks), each a
@@ -370,6 +370,7 @@ func commands(cmd string) [][][]string {
 	var words []string
 	var w strings.Builder
 	inWord, target := false, false // target: the next word is what a redirection goes to or from
+	windowsPath := false           // absolute drive and UNC paths keep their separators
 	var quote rune
 	word := func() {
 		if inWord && !target {
@@ -380,6 +381,7 @@ func commands(cmd string) [][][]string {
 		}
 		w.Reset()
 		inWord = false
+		windowsPath = false
 	}
 	pipe := func() {
 		word()
@@ -394,17 +396,21 @@ func commands(cmd string) [][][]string {
 	rs := []rune(cmd)
 	for i := 0; i < len(rs); i++ {
 		r := rs[i]
+		if w.Len() == 0 && i+2 < len(rs) {
+			windowsPath = ('A' <= r && r <= 'Z' || 'a' <= r && r <= 'z') && rs[i+1] == ':' && (rs[i+2] == '\\' || rs[i+2] == '/') ||
+				r == '\\' && rs[i+1] == '\\' && rs[i+2] != '\\'
+		}
 		switch {
 		case quote != 0 && r == quote:
 			quote = 0
-		case quote == '"' && r == '\\' && i+1 < len(rs):
+		case quote == '"' && r == '\\' && !windowsPath && i+1 < len(rs):
 			i++
 			w.WriteRune(rs[i])
 		case quote != 0:
 			w.WriteRune(r)
 		case r == '\'' || r == '"':
 			quote, inWord = r, true
-		case r == '\\' && i+1 < len(rs):
+		case r == '\\' && !windowsPath && i+1 < len(rs):
 			i++
 			w.WriteRune(rs[i])
 			inWord = true

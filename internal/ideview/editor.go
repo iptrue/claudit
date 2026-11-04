@@ -63,18 +63,22 @@ func editorTop(lines []string, cur ide.Pos, tw, ih int, wrap bool) (top, skip in
 	return scrollTop(cur.Line, len(lines), ih), 0
 }
 
-// editorLast is the last line the editor can start at in ih rows: the one that shows the end of
-// the text at the bottom.
-func editorLast(lines []string, tw, ih int, wrap bool) int {
+// editorRange is the followed position and the last scroll position, in screen rows.
+func editorRange(lines []string, cur ide.Pos, tw, ih int, wrap bool) (int, int) {
+	top, skip := editorTop(lines, cur, tw, ih, wrap)
 	if !wrap {
-		return max(0, len(lines)-ih)
+		return top, max(0, len(lines)-ih)
 	}
-	last, rows := len(lines), 0
-	for last > 0 && rows+len(segments(lines[last-1], tw)) <= ih {
-		last--
-		rows += len(segments(lines[last], tw))
+	follow, total := skip, 0
+	for i, line := range lines {
+		n := len(segments(line, tw))
+		total += n
+		if i < top {
+			follow += n
+		}
 	}
-	return min(last, len(lines)-1)
+	last := max(0, total-ih)
+	return min(follow, last), last
 }
 
 // style is how one editor cell looks.
@@ -231,9 +235,18 @@ func editorBody(st *ide.State, cam *ide.Agent, tab *ide.Tab, o Options, iw, ih i
 		return out
 	}
 
-	top, skip := editorTop(lines, cur, tw, ih, o.Wrap)
-	if d := o.Scroll[fileKey(tab.Path)]; d != 0 {
-		top, skip = scrolled(top, d, editorLast(lines, tw, ih, o.Wrap)), 0
+	follow, last := editorRange(lines, cur, tw, ih, o.Wrap)
+	top, skip := scrolled(follow, o.Scroll[fileKey(tab.Path)], last), 0
+	if o.Wrap {
+		skip, top = top, 0
+		for top < len(lines)-1 {
+			n := len(segments(lines[top], tw))
+			if skip < n {
+				break
+			}
+			skip -= n
+			top++
+		}
 	}
 	var out []string
 	for ln := top; ln < len(lines) && len(out) < ih+skip; ln++ {

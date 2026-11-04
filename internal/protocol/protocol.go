@@ -64,6 +64,9 @@ type ModeChanged struct{ Mode string }
 // ModelChanged: after a SetModel, the session runs Model ("claude-haiku-5-5").
 type ModelChanged struct{ Model string }
 
+// ServingModel is the model reported by a response, including a server-side fallback.
+type ServingModel struct{ Model string }
+
 // Settings answers GetSettings: Effort is the level the next message runs at, as claude picks it
 // from the env, the flags, the settings of the model and the caps; "" for a model without efforts.
 type Settings struct{ Effort string }
@@ -181,6 +184,24 @@ type TaskDone struct {
 	Summary   string
 }
 
+// BackgroundTasks is the complete set of live background tasks, replacing the previous set.
+type BackgroundTasks struct{ Tasks []BackgroundTask }
+
+// BackgroundTask names one unfinished task as the CLI reports it.
+type BackgroundTask struct {
+	ID          string `json:"task_id"`
+	Description string `json:"description"`
+}
+
+// WakeupScheduled reports ScheduleWakeup's confirmed deadline; zero means the loop ended.
+type WakeupScheduled struct{ At time.Time }
+
+// CommandStarted marks a new turn, including one started by a scheduled wakeup.
+type CommandStarted struct {
+	WakeupSource string
+	ScheduledFor time.Time
+}
+
 // Result ends a turn.
 type Result struct {
 	IsError        bool
@@ -226,6 +247,7 @@ type Exited struct{ Err error }
 func (Init) isEvent()              {}
 func (ModeChanged) isEvent()       {}
 func (ModelChanged) isEvent()      {}
+func (ServingModel) isEvent()      {}
 func (Settings) isEvent()          {}
 func (ControlError) isEvent()      {}
 func (APIRetry) isEvent()          {}
@@ -245,6 +267,9 @@ func (PermissionRequest) isEvent() {}
 func (TaskStarted) isEvent()       {}
 func (TaskProgress) isEvent()      {}
 func (TaskDone) isEvent()          {}
+func (BackgroundTasks) isEvent()   {}
+func (WakeupScheduled) isEvent()   {}
+func (CommandStarted) isEvent()    {}
 func (Result) isEvent()            {}
 func (RateLimits) isEvent()        {}
 func (Stderr) isEvent()            {}
@@ -357,6 +382,19 @@ func Parse(line []byte) []Event {
 		return []Event{Reset{}}
 	case "control_response":
 		return parseControlResponse(line)
+	case "command_lifecycle":
+		var m struct {
+			State        string `json:"state"`
+			WakeupSource string `json:"wakeup_source"`
+			ScheduledFor int64  `json:"scheduled_for"`
+		}
+		if json.Unmarshal(line, &m) == nil && m.State == "started" {
+			ev := CommandStarted{WakeupSource: m.WakeupSource}
+			if m.ScheduledFor > 0 {
+				ev.ScheduledFor = time.UnixMilli(m.ScheduledFor)
+			}
+			return []Event{ev}
+		}
 	}
 	return nil
 }
@@ -379,6 +417,13 @@ func parseSystem(line []byte) []Event {
 		return parseTaskProgress(line)
 	case "task_notification", "task_updated":
 		return parseTaskDone(line)
+	case "background_tasks_changed":
+		var m struct {
+			Tasks []BackgroundTask `json:"tasks"`
+		}
+		if json.Unmarshal(line, &m) == nil && m.Tasks != nil {
+			return []Event{BackgroundTasks{Tasks: m.Tasks}}
+		}
 	case "api_retry":
 		return parseAPIRetry(line)
 	case "model_fallback":
@@ -561,7 +606,16 @@ func parseStreamEvent(line []byte) []Event {
 			Type         string `json:"type"`
 			ContentBlock struct {
 				Type string `json:"type"`
+				To   struct {
+					Model string `json:"model"`
+				} `json:"to"`
 			} `json:"content_block"`
+			Usage struct {
+				Iterations []struct {
+					Type  string `json:"type"`
+					Model string `json:"model"`
+				} `json:"iterations"`
+			} `json:"usage"`
 			Delta struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
@@ -584,6 +638,15 @@ func parseStreamEvent(line []byte) []Event {
 	case e.Type == "message_start":
 		u := e.Message.Usage
 		return []Event{Context{Model: e.Message.Model, Tokens: u.Input + u.CacheRead + u.CacheCreation}}
+	case e.Type == "content_block_start" && e.ContentBlock.Type == "fallback" && e.ContentBlock.To.Model != "":
+		return []Event{ServingModel{Model: e.ContentBlock.To.Model}}
+	case e.Type == "message_delta":
+		for i := len(e.Usage.Iterations) - 1; i >= 0; i-- {
+			it := e.Usage.Iterations[i]
+			if it.Type == "fallback_message" && it.Model != "" {
+				return []Event{ServingModel{Model: it.Model}}
+			}
+		}
 	case e.Type == "content_block_start" && e.ContentBlock.Type == "thinking":
 		return []Event{Thinking{}}
 	case e.Type == "content_block_start" && e.ContentBlock.Type == "text":
@@ -605,6 +668,9 @@ func parseAssistant(line []byte) []Event {
 				Name  string         `json:"name"`
 				Input map[string]any `json:"input"`
 				Text  string         `json:"text"`
+				To    struct {
+					Model string `json:"model"`
+				} `json:"to"`
 			} `json:"content"`
 		} `json:"message"`
 	}
@@ -614,6 +680,7 @@ func parseAssistant(line []byte) []Event {
 	// The model's text arrives as stream events; the CLI's own replies (slash commands, API
 	// errors) come only here, from the "<synthetic>" model.
 	synthetic := m.Message.Model == "<synthetic>" && m.Parent == ""
+	model := m.Message.Model
 	var evs []Event
 	for _, c := range m.Message.Content {
 		switch {
@@ -621,14 +688,20 @@ func parseAssistant(line []byte) []Event {
 			evs = append(evs, ToolUse{ID: c.ID, Name: c.Name, Input: c.Input, Parent: m.Parent, Model: m.Message.Model})
 		case c.Type == "text" && synthetic && c.Text != "":
 			evs = append(evs, CLIReply{Text: c.Text})
+		case c.Type == "fallback" && c.To.Model != "":
+			model = c.To.Model
 		}
+	}
+	if m.Parent == "" && !synthetic && model != "" {
+		evs = append(evs, ServingModel{Model: model})
 	}
 	return evs
 }
 
 func parseUser(line []byte) []Event {
 	var m struct {
-		Message struct {
+		ToolResult json.RawMessage `json:"tool_use_result"`
+		Message    struct {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
@@ -650,6 +723,16 @@ func parseUser(line []byte) []Event {
 		if it.Type == "tool_result" {
 			evs = append(evs, ToolResult{ID: it.ToolUseID, Output: resultText(it.Content), IsError: it.IsError})
 		}
+	}
+	var wakeup struct {
+		ScheduledFor *int64 `json:"scheduledFor"`
+	}
+	if json.Unmarshal(m.ToolResult, &wakeup) == nil && wakeup.ScheduledFor != nil {
+		ev := WakeupScheduled{}
+		if *wakeup.ScheduledFor > 0 {
+			ev.At = time.UnixMilli(*wakeup.ScheduledFor)
+		}
+		evs = append(evs, ev)
 	}
 	return evs
 }

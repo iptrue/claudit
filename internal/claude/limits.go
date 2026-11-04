@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,11 @@ exec /bin/sh -c "$1"
 // prefix that keeps it from what claude runs, unless the user has a prefix of their own. done
 // removes the prefix once claude is gone for good.
 func claudeEnv() (env []string, done func(), err error) {
+	if runtime.GOOS == "windows" {
+		// Respect Claude's native shell selection. Unix debug wrappers cannot be executed by
+		// PowerShell/CMD; Windows uses the protocol's standard rate_limit_event messages.
+		return os.Environ(), func() {}, nil
+	}
 	env, done = append(os.Environ(), "ANTHROPIC_LOG=debug"), func() {}
 	if os.Getenv("CLAUDE_CODE_SHELL_PREFIX") != "" {
 		return env, done, nil // theirs runs: what claude runs sees ANTHROPIC_LOG

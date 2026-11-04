@@ -312,6 +312,19 @@ func (m *Model) follow(t tailer, now time.Time) {
 
 func (m *Model) tick(now time.Time) {
 	m.Now = now
+	if len(m.pending) > 0 && m.queueAt < 0 && !m.Status.Replay && m.Status.State != "exited" && now.Sub(m.pendingAt) >= 5*time.Second {
+		if _, isCmd := slash(m.pending[0]); !isCmd && !m.cmdTurn {
+			m.flush()
+		}
+	}
+	if m.inspection != nil {
+		switch {
+		case m.mouseDown:
+			m.inspection.until = now.Add(inspectionCooldown)
+		case !now.Before(m.inspection.until):
+			m.inspection = nil
+		}
+	}
 	if len(m.crew.tailers) > 0 && now.Sub(m.crew.polled) >= pollEvery {
 		m.crew.polled = now
 		for _, t := range m.crew.tailers {
@@ -325,6 +338,9 @@ func (m *Model) tick(now time.Time) {
 
 // exited ends everything still running: claude is gone, nothing will report on it any more.
 func (m *Model) exited(now time.Time) {
+	m.Status.Tasks, m.wakeup = 0, time.Time{}
+	m.tasks = nil
+	m.inspection = nil
 	m.abandon(func(string) bool { return true })
 	for _, a := range m.Sim.State().Agents {
 		if a.Kind != ide.Main && (a.Status == ide.Running || a.Status == ide.Queued) {
@@ -338,12 +354,19 @@ func (m *Model) exited(now time.Time) {
 // switch of the left panel to the agents tree, the status of main, and the camera in the status line.
 func (m *Model) sync() {
 	st := m.Sim.State()
+	m.Status.Wakeup = ""
+	if !m.wakeup.IsZero() {
+		left := max(m.wakeup.Sub(m.Now), 0)
+		m.Status.Wakeup = (time.Duration(math.Ceil(left.Seconds())) * time.Second).String()
+	}
 	// The left column shows the agents while others than main are at work, the files otherwise.
-	m.Panel = ideview.Files
-	if slices.ContainsFunc(st.Agents, func(a *ide.Agent) bool {
-		return a.Kind != ide.Main && (a.Status == ide.Running || a.Status == ide.Queued)
-	}) {
-		m.Panel = ideview.Agents
+	if m.inspection == nil {
+		m.Panel = ideview.Files
+		if slices.ContainsFunc(st.Agents, func(a *ide.Agent) bool {
+			return a.Kind != ide.Main && (a.Status == ide.Running || a.Status == ide.Queued)
+		}) {
+			m.Panel = ideview.Agents
+		}
 	}
 	m.PanelFocus = m.PanelFocus && m.Panel == ideview.Agents
 	st.Agents[0].Status = ide.Done // main between turns

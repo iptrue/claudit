@@ -36,8 +36,14 @@ var (
 // Render draws st into exactly width×height cells (height lines, each width cells wide), following
 // the camera's agent.
 func Render(st *ide.State, o Options, width, height int) string {
+	text, _ := RenderWithScrollbars(st, o, width, height)
+	return text
+}
+
+// RenderWithScrollbars also returns the scrollbar geometry for the frame's mouse zones.
+func RenderWithScrollbars(st *ide.State, o Options, width, height int) (string, []Scrollbar) {
 	if height <= 0 {
-		return ""
+		return "", nil
 	}
 	cam := camera(st)
 	ew := leftWidth(width)
@@ -55,7 +61,9 @@ func Render(st *ide.State, o Options, width, height int) string {
 			lines[r.Min.Y+j] += l
 		}
 	}
-	return strings.Join(lines, "\n")
+	bars := Scrollbars(st, o, width, height)
+	drawScrollbars(lines, bars)
+	return strings.Join(lines, "\n"), bars
 }
 
 // leftWidth is the width of the left column, the same for the files and the agents panels.
@@ -256,6 +264,8 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	t := &cam.Term
 	prompt := lipgloss.NewStyle().Foreground(agentColor(cam)).Render(clip(termPrompt, iw, ""))
 	back := o.Scroll[termKey(cam.Key)]
+	layout := o.terminalLayout(t, iw)
+	back = min(max(back, 0), max(0, layout.total-ih))
 	// A row of a line, styled only once it is in the window: scrolled far back, styling every row
 	// below it would cost a frame its time.
 	type row struct {
@@ -265,8 +275,20 @@ func terminalPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 		text string
 	}
 	var rows []row
-	// The last row belongs to the live prompt line; scrolled back, rows below the window are made too.
-	lines := t.Lines[max(0, len(t.Lines)-max(0, ih-1+back)):]
+	// Skip the rows below the window before wrapping any text. Keep the live row as the last
+	// placeholder; it is outside the shown range when scrolled back.
+	end, skipped := len(t.Lines), 0
+	for end > 0 && skipped+layout.rows[end-1] < back {
+		end--
+		skipped += layout.rows[end]
+	}
+	back -= skipped
+	start, need := end, max(0, ih-1+back)
+	for start > 0 && need > 0 {
+		start--
+		need -= layout.rows[start]
+	}
+	lines := t.Lines[start:end]
 	for i := range lines {
 		l := &lines[i]
 		pw := 0
@@ -584,7 +606,8 @@ const maxWrap = 4
 // wrap cuts s into plain rows as a terminal wraps a long line: the first row first cells wide,
 // the others w. Past maxWrap rows the text is cut with "…".
 func wrap(s string, first, w int) []string {
-	cs, _ := layout(s, math.MaxInt, 0)
+	// Tabs take four cells even in a narrower pane; include one cell beyond the visible rows.
+	cs, _ := layout(s, max(first, 4)+(maxWrap-1)*max(w, 4), 0)
 	var rows []string
 	room, x, start := max(first, 1), 0, 0
 	for i, c := range cs {
@@ -598,6 +621,21 @@ func wrap(s string, first, w int) []string {
 		x += c.w
 	}
 	return append(rows, join(cs[start:]))
+}
+
+// wrappedRows counts ordinary log lines without allocating their wrapped text.
+func wrappedRows(s string, first, w int) int {
+	first, w = max(first, 1), max(w, 1)
+	// Once the fourth row starts, the rest cannot change the count.
+	for i := 0; i < min(len(s), first+(maxWrap-2)*w+1); i++ {
+		if s[i] < ' ' || s[i] > '~' {
+			return len(wrap(s, first, w))
+		}
+	}
+	if len(s) <= first {
+		return 1
+	}
+	return min(maxWrap, 2+(len(s)-first-1)/w)
 }
 
 // tail renders s as plain one-line text, dropping cells on the left until it is at most w cells wide.

@@ -20,6 +20,14 @@ Or with Go 1.27 or newer, into `$(go env GOPATH)/bin`:
 go install github.com/pixelbender/claudit@latest
 ```
 
+On Windows, use Windows Terminal and the native Claude Code installer so `claude.exe` is on your
+`PATH` (the npm `claude.cmd` launcher is not supported). Install ClaudIt with `go install` above,
+or download the Windows amd64 or arm64 ZIP from [Releases](https://github.com/pixelbender/claudit/releases), extract `claudit.exe`
+and add its directory to `PATH`.
+
+On Windows, usage limits come from Claude Code's standard rate-limit events. The Unix debug-log
+fallback is not enabled automatically.
+
 ## Run
 
 In your project:
@@ -31,3 +39,15 @@ claudit
 Arguments go on to claude, so `claudit --model haiku` works too.
 
 The rest you'll figure out.
+
+## Build and test
+
+```sh
+go vet ./...
+go test ./...
+go build .
+```
+
+CI runs these checks on Windows, macOS and Linux. To prepare release archives on macOS or Linux
+(with Go, Make, tar and zip installed), run `make dist VERSION=0.1.0`. It creates tar.gz archives
+for macOS/Linux and ZIP archives containing `claudit.exe` for Windows, each for amd64 and arm64.

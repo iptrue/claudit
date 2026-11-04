@@ -15,6 +15,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/pixelbender/claudit/internal/ide"
+	"github.com/pixelbender/claudit/internal/ideview"
 	"github.com/pixelbender/claudit/internal/protocol"
 	"github.com/pixelbender/claudit/internal/theme"
 )
@@ -133,6 +135,102 @@ func TestModelMouseScrollIDE(t *testing.T) {
 	if _, y := modelMouseAt(t, m, "f03.txt"); y != 1 || m.ChatScroll != 0 {
 		t.Errorf("f03.txt on row %d, chat scrolled %d", y, m.ChatScroll)
 	}
+}
+
+// The border scrolls the files without opening one or selecting text, including a drag outside it.
+func TestModelMouseScrollbar(t *testing.T) {
+	m, _ := modelMouseNew(t)
+	dir := t.TempDir()
+	for i := range 60 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d.txt", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.Sim.SetRoot(dir)
+	m.View()
+	bottom := m.ideHeight - 2
+	m.Update(tea.MouseClickMsg{X: 19, Y: bottom, Button: tea.MouseLeft})
+	m.Update(tea.MouseReleaseMsg{X: 19, Y: bottom, Button: tea.MouseLeft})
+	if _, y := modelMouseAt(t, m, "f59.txt"); y != bottom {
+		t.Fatalf("click did not reach the last file: row %d, want %d", y, bottom)
+	}
+	if len(m.ideState().Tabs) != 0 || m.sel.drag {
+		t.Fatal("the scrollbar opened a file or selected text")
+	}
+	m.Update(tea.MouseClickMsg{X: 19, Y: bottom, Button: tea.MouseLeft})
+	before := m.scroll["files"]
+	m.View()
+	if m.scroll["files"] != before {
+		t.Fatal("grabbing the thumb moved it")
+	}
+	m.Update(tea.MouseMotionMsg{X: 70, Y: -10, Button: tea.MouseLeft})
+	m.View()
+	_, cmd := m.Update(tea.MouseReleaseMsg{X: 70, Y: -10, Button: tea.MouseLeft})
+	if _, y := modelMouseAt(t, m, "f00.txt"); y != 1 || cmd != nil || m.sel.drag {
+		t.Fatalf("drag to top: row %d, copy command %v, selecting %v", y, cmd != nil, m.sel.drag)
+	}
+	m.Update(tea.MouseMotionMsg{X: 19, Y: bottom, Button: tea.MouseLeft})
+	if _, y := modelMouseAt(t, m, "f00.txt"); y != 1 {
+		t.Fatal("the scrollbar still drags after release")
+	}
+}
+
+func TestModelMouseScrollbarStopsWhenHidden(t *testing.T) {
+	for _, hide := range []string{"help", "resize"} {
+		t.Run(hide, func(t *testing.T) {
+			m, _ := modelMouseNew(t)
+			dir := t.TempDir()
+			for i := range 60 {
+				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d.txt", i)), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m.Sim.SetRoot(dir)
+			m.View()
+			m.Update(tea.MouseClickMsg{X: 19, Y: 1, Button: tea.MouseLeft})
+			if hide == "help" {
+				m.ShowHelp = true
+			} else {
+				m.Update(tea.WindowSizeMsg{Width: 80, Height: 25})
+			}
+			m.View()
+			m.Update(tea.MouseMotionMsg{X: 19, Y: 20, Button: tea.MouseLeft})
+			if m.scroll["files"] != 0 {
+				t.Fatal("a hidden or resized scrollbar still captures the mouse")
+			}
+		})
+	}
+}
+
+func TestModelMouseScrollbarKeepsAgentFocus(t *testing.T) {
+	m, _ := modelMouseNew(t)
+	st := m.Sim.State()
+	for i := range 60 {
+		st.Agents = append(st.Agents, &ide.Agent{Key: fmt.Sprintf("a%02d", i), Name: fmt.Sprintf("agent%02d", i)})
+	}
+	m.Panel, m.PanelFocus, m.PanelSel = ideview.Agents, true, "a40"
+	rows := strings.Split(ansi.Strip(m.View().Content), "\n")
+	for _, bar := range ideview.Scrollbars(st, ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel}, m.Width, m.ideHeight) {
+		if bar.Key != "agents" {
+			continue
+		}
+		y, _ := bar.Thumb()
+		m.Update(tea.MouseClickMsg{X: 19, Y: y, Button: tea.MouseLeft})
+		after := strings.Split(ansi.Strip(m.View().Content), "\n")
+		if !m.PanelFocus || string([]rune(after[1])[:20]) != string([]rune(rows[1])[:20]) {
+			t.Fatal("grabbing the agents scrollbar changed focus or moved its content")
+		}
+		m.Update(tea.MouseMotionMsg{X: 19, Y: 100, Button: tea.MouseLeft})
+		m.Update(tea.MouseReleaseMsg{X: 19, Y: 100, Button: tea.MouseLeft})
+		m.View()
+		modelPress(m, inputKey("down"))
+		modelMouseAt(t, m, "agent41")
+		if m.scroll["agents"] != 0 {
+			t.Fatal("keyboard navigation did not bring the selected agent back into view")
+		}
+		return
+	}
+	t.Fatal("agents scrollbar is missing")
 }
 
 // The wheel events that come while a scroll is in progress cost no frame: they add up and scroll at

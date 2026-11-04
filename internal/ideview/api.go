@@ -23,6 +23,7 @@ type Options struct {
 	Busy    bool      // the main agent is at work (its ide.Agent stays Running between turns)
 	Wrap    bool      // the editor wraps long lines instead of scrolling sideways
 	Scroll  Scroll    // how far the user scrolled the panes away from their agents
+	Terms   TermCache // wrapped row counts shared by rendering and mouse handling
 }
 
 // AgentRows lists the keys of the selectable rows of the agents panel, top to bottom.

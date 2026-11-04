@@ -43,7 +43,7 @@ func (m *Model) panelKey(key string) {
 	case (key == "up" || key == "down" || key == "enter") && m.Panel != ideview.Agents:
 		// the explorer is on screen: no agent rows to select
 	case key == "up", key == "down":
-		rows := ideview.AgentRows(m.Sim.State())
+		rows := ideview.AgentRows(m.ideState())
 		if len(rows) == 0 {
 			return
 		}
@@ -57,6 +57,7 @@ func (m *Model) panelKey(key string) {
 			i = min(i+1, len(rows)-1)
 		}
 		m.PanelSel = rows[i]
+		delete(m.scroll, "agents")
 	case key == "enter":
 		m.pinSelected()
 	case key == "esc":
@@ -69,7 +70,7 @@ func isDigitKey(s string) bool { return len(s) == 1 && s[0] >= '0' && s[0] <= '9
 // focusPanel gives the keys to the agents panel, starting on the camera's agent.
 func (m *Model) focusPanel() {
 	m.PanelFocus = true
-	st := m.Sim.State()
+	st := m.ideState()
 	if m.PanelSel == "" || !slices.Contains(ideview.AgentRows(st), m.PanelSel) {
 		m.PanelSel = st.Camera
 	}
@@ -79,13 +80,14 @@ func (m *Model) focusPanel() {
 // camera back to the director.
 func (m *Model) pinHotkey(n int) {
 	if n == 0 {
+		m.inspection = nil // an explicit return to auto-follow does not wait for the cooldown
 		m.Sim.Pin("")
 		return
 	}
-	for _, a := range m.Sim.State().Agents {
+	for _, a := range m.ideState().Agents {
 		if a.Hotkey == n {
-			m.Sim.Pin(a.Key)
 			m.PanelSel = a.Key
+			m.pinSelected()
 			return
 		}
 	}
@@ -96,6 +98,12 @@ func (m *Model) pinHotkey(n int) {
 func (m *Model) pinSelected() {
 	a := m.Sim.FindAgent(m.PanelSel)
 	if a == nil {
+		a = m.Sim.FindAgent(m.crew.slots[m.PanelSel]) // a queued workflow slot received its agent id
+		if a != nil {
+			m.PanelSel = a.Key
+		}
+	}
+	if a == nil {
 		return
 	}
 	if a.Kind == ide.Workflow {
@@ -105,7 +113,7 @@ func (m *Model) pinSelected() {
 		}
 		a = m.Sim.State().Agents[i]
 	}
-	m.Sim.Pin(a.Key)
+	m.pinView(a.Key)
 }
 
 // quitWindow is how soon a second ctrl+c or esc must follow the first to quit.
@@ -128,10 +136,15 @@ func (m *Model) ctrlC() tea.Cmd {
 }
 
 // quitTwice quits on a second press of key within quitWindow. The keys do not mix: esc after
-// ctrl+c is a change of mind, not a confirmation.
+// ctrl+c is a change of mind, not a confirmation. Esc asks first if background tasks remain.
 func (m *Model) quitTwice(key string) tea.Cmd {
 	now := m.clock()
 	if m.quitKey == key && now.Sub(m.quitAt) < quitWindow {
+		if key == "esc" && len(m.tasks) > 0 {
+			m.quitKey = ""
+			m.Popup = &QuitPopup{Tasks: m.tasks}
+			return nil
+		}
 		return tea.Quit
 	}
 	m.quitAt, m.quitKey = now, key
@@ -145,6 +158,7 @@ func (m *Model) canInterrupt() bool {
 
 // interrupt asks claude to stop the turn; the Result that ends it says so in the chat.
 func (m *Model) interrupt() {
+	m.quitKey = "" // cancelling work resets any earlier exit confirmation
 	if !m.interrupting {
 		m.interrupts++
 		m.send(protocol.Interrupt{RequestID: "interrupt-" + strconv.Itoa(m.interrupts)})

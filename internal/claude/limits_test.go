@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,9 @@ func TestDebugLimits(t *testing.T) {
 // as it does ('prefix' 'script'), run without it, in a shell, their exit code theirs. The prefix
 // goes once claude is done; a prefix of the user's own stays theirs.
 func TestSpawnShellPrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix shell prefix")
+	}
 	dir := t.TempDir()
 	fake := `#!/bin/sh
 echo "$ANTHROPIC_LOG" > "$FAKE_DIR/self"
@@ -157,18 +161,11 @@ echo $? > "$FAKE_DIR/code"
 
 // claude runs with ANTHROPIC_LOG=debug, and the limits its client prints come among its events.
 func TestSpawnDebugLimits(t *testing.T) {
-	dir := t.TempDir()
-	fixture := filepath.Join(dir, "dump")
-	if err := os.WriteFile(fixture, []byte(limitsDump), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fake := "#!/bin/sh\n[ \"$ANTHROPIC_LOG\" = debug ] && cat \"$FAKE_FIXTURE\"\necho '{\"type\":\"conversation_reset\"}'\n"
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(fake), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_FIXTURE", fixture)
+	installClaudeHelper(t, "limits")
 	t.Setenv("ANTHROPIC_LOG", "") // claudit sets it, whatever the user has
+	if runtime.GOOS == "windows" {
+		t.Setenv("ANTHROPIC_LOG", "debug")
+	}
 
 	sess, err := Spawn(t.Context(), nil)
 	if err != nil {
