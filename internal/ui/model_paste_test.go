@@ -323,3 +323,45 @@ func TestPastedTexts(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// A goal and a side question carry the pasted text too: the goal is shown as claude is told it,
+// and /btw asks what was pasted, not its placeholder.
+func TestPasteInGoalAndBtw(t *testing.T) {
+	for _, busy := range []bool{false, true} {
+		m, sent := modelNew(t, false)
+		m.addCommands([]protocol.Command{{Name: "goal"}})
+		m.Status.Busy = busy
+		modelPress(m, inputTyped("/goal ")...)
+		modelPasteRun(m, "fix\nthe\ntests\nnow")
+		modelPress(m, inputKey("enter"))
+		var shown string
+		for _, e := range m.chatEntries() {
+			if e.Kind == CommandEntry {
+				shown = e.Text
+			}
+		}
+		if want := "Goal set: " + tidy("fix\nthe\ntests\nnow"); shown != want {
+			t.Errorf("busy=%v: goal %q, want %q", busy, shown, want)
+		}
+		if busy {
+			modelEvents(m, protocol.Result{})
+		}
+		if len(*sent) != 1 || modelUserText((*sent)[0]) != "/goal fix\nthe\ntests\nnow" {
+			t.Errorf("busy=%v: sent %#v", busy, *sent)
+		}
+	}
+	m, sent := modelLocalNew(t)
+	m.Status.Busy = true
+	modelPress(m, inputTyped("/btw ")...)
+	modelPasteRun(m, "a\nb\nc\nd")
+	modelPress(m, inputKey("enter"))
+	if len(*sent) != 1 {
+		t.Fatalf("btw sent %#v", *sent)
+	}
+	if q, ok := (*sent)[0].(protocol.SideQuestion); !ok || q.Question != "a\nb\nc\nd" {
+		t.Errorf("btw sent %#v", *sent)
+	}
+	if p, ok := m.Popup.(*BtwPopup); !ok || p.Question != "a\nb\nc\nd" {
+		t.Errorf("btw popup %#v", m.Popup)
+	}
+}

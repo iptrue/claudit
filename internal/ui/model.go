@@ -975,7 +975,7 @@ func (m *Model) chatEntries() []ChatEntry {
 	for i, p := range m.pending {
 		if i != m.queueAt { // that one is in the prompt
 			e := ChatEntry{Kind: UserEntry, Text: m.pastedTexts(p), Queued: true}
-			if goal := goalCondition(p); goal != "" {
+			if goal := goalCondition(e.Text); goal != "" {
 				e.Kind, e.Text = CommandEntry, "Goal set: "+goal
 			}
 			entries = append(entries, e)
