@@ -26,7 +26,8 @@ var (
 
 // drawMarkdown renders what an agent writes into styled lines of at most w cells: headings,
 // lists, quotes, rules, tables, fenced code, and inline **bold**, *italic*, `code` and [links](url).
-// Source line breaks are kept; a fence that is still streaming counts as code to the end.
+// Source line breaks are kept, and long lines wrap, code too; a fence that is still streaming
+// counts as code to the end.
 func drawMarkdown(src string, w int) []string {
 	w = max(1, w)
 	var out []string
@@ -39,7 +40,11 @@ func drawMarkdown(src string, w int) []string {
 			lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
 			for i++; i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```"); i++ {
 				code := ideview.Highlight(drawClean(lines[i]), lang)
-				out = append(out, styleRule.Render("│ ")+drawFitTrunc(code, w-2))
+				// Wrapped at words as the prose is, the bar going on beside each part: cut, a
+				// long line lost its end (a draft to send, a command).
+				for _, part := range strings.Split(ansi.Wrap(code, max(1, w-2), ""), "\n") {
+					out = append(out, styleRule.Render("│ ")+drawFit(part, w-2))
+				}
 			}
 		case trimmed == "":
 			if len(out) > 0 && out[len(out)-1] != "" {

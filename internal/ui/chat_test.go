@@ -542,3 +542,26 @@ func TestChatTimes(t *testing.T) {
 		t.Errorf("a narrow chat shows times:\n%s", ansi.Strip(narrow))
 	}
 }
+
+// A long line of code wraps beside the bar, as the prose does, and keeps all its text: cut, a
+// draft to send or a command lost its end.
+func TestDrawMarkdownCodeWraps(t *testing.T) {
+	line := "олег, предлагаю разбить паритет на 7 подисторий supercalifragilisticexpialidocious 😀😀 end"
+	for _, w := range []int{5, 9, 24, 40} {
+		lines := drawMarkdown("```\n"+line+"\n```", w)
+		var got strings.Builder
+		for _, l := range lines {
+			l = ansi.Strip(l)
+			if ansi.StringWidth(l) > w || !strings.HasPrefix(l, "│ ") {
+				t.Errorf("w %d: line %q", w, l)
+			}
+			got.WriteString(strings.TrimPrefix(l, "│ "))
+		}
+		if strings.ReplaceAll(got.String(), " ", "") != strings.ReplaceAll(line, " ", "") {
+			t.Errorf("w %d: the code lost text: %q", w, got.String())
+		}
+		if len(lines) < 2 {
+			t.Errorf("w %d: the code did not wrap: %q", w, lines)
+		}
+	}
+}
