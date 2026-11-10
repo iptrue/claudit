@@ -44,10 +44,12 @@ func drawMarkdown(src string, w int) []string {
 					continue
 				}
 				// Wrapped at words as the prose is, the bar going on beside each part: cut, a
-				// long line lost its end (a draft to send, a command). Each part is highlighted
-				// by itself, as drawDetail does, for a colour cut off at the wrap would not go on.
-				for _, part := range drawWrap(lines[i], w-2) {
-					out = append(out, styleRule.Render("│ ")+drawFit(ideview.Highlight(part, lang), w-2))
+				// long line lost its end (a draft to send, a command). The line is highlighted
+				// whole and its colour goes on past the wrap: the rest of a comment or a string
+				// is not code.
+				code := lipgloss.Wrap(ideview.Highlight(drawClean(lines[i]), lang), w-2, "")
+				for part := range strings.SplitSeq(code, "\n") {
+					out = append(out, styleRule.Render("│ ")+drawFit(part, w-2))
 				}
 			}
 		case trimmed == "":
