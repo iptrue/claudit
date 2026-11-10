@@ -78,7 +78,7 @@ func (m *Model) View() tea.View {
 	if m.Panel == ideview.Agents {
 		hints = slices.Insert(slices.Clone(hints), 1, drawHintTab)
 	}
-	o := ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel, Now: m.Now, Busy: m.Status.Busy, Wrap: m.Wrap, Scroll: m.scroll, Terms: m.termCache}
+	o := ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel, Now: m.Now, Busy: m.Status.Busy, Wrap: m.Wrap, Raw: m.Raw, Specs: m.specs, Scroll: m.scroll, Terms: m.termCache}
 	if m.inspection != nil {
 		o.Now, o.Busy = m.inspection.frame, m.inspection.busy
 	}
@@ -92,6 +92,9 @@ func (m *Model) View() tea.View {
 		top = frame
 		m.zones = append(m.zones, zone{w: w, h: ideH,
 			click: func(x, y int) tea.Cmd {
+				if hit, ok := ideview.SpecAt(st, o, w, ideH, x, y); ok {
+					return m.clickSpec(hit)
+				}
 				path, dir := ideview.TreeAt(st, o, w, ideH, x, y)
 				switch {
 				case dir:

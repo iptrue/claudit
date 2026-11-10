@@ -49,9 +49,12 @@ func RenderWithScrollbars(st *ide.State, o Options, width, height int) (string, 
 	ew := leftWidth(width)
 	rw := width - ew
 	var left []string
-	if o.Panel == Agents {
+	switch v := outlined(st, o, width, height); {
+	case o.Panel == Agents:
 		left = agentsPane(st, cam, o, ew, height)
-	} else {
+	case v != nil:
+		left = outlinePane(v, o, ew, height)
+	default:
 		left = explorerPane(st, cam, o, ew, height)
 	}
 	lines := slices.Clone(left)
@@ -95,9 +98,10 @@ func AgentAt(st *ide.State, o Options, width, height, x, y int) string {
 }
 
 // TreeAt is the explorer row a click at cell (x, y) of Render(st, o, width, height) falls on: its
-// path, "" for none, and whether it is a folder.
+// path, "" for none, and whether it is a folder. There is none while the outline of a spec is in
+// place of the explorer.
 func TreeAt(st *ide.State, o Options, width, height, x, y int) (path string, dir bool) {
-	if o.Panel != Files || x < 0 || x >= leftWidth(width) || y < 1 || y >= height-1 {
+	if o.Panel != Files || x < 0 || x >= leftWidth(width) || y < 1 || y >= height-1 || outlined(st, o, width, height) != nil {
 		return "", false
 	}
 	_, ih := inner(0, height)
@@ -118,15 +122,17 @@ func TextAt(st *ide.State, o Options, width, height, x, y int) image.Rectangle {
 	}
 	y0, y1 := 1, height-1
 	if c, t, ok := columnAt(st, o, width, height, x, y); ok {
-		iw, _ := inner(t.Dx(), t.Dy())
+		iw, ih := inner(t.Dx(), t.Dy())
 		x0, w, y0, y1 = t.Min.X+2, textWidth(iw), t.Min.Y+1, t.Max.Y-1
-		if c.pane == ide.Editor {
+		if c.pane == ide.Editor { // a spec shown structured has the air of a terminal
 			tab := shownTab(st, c.agent)
 			if tab == nil {
 				return image.Rectangle{}
 			}
-			_, _, tw := editorText(tab, c.agent, iw)
-			x0, w = t.Min.X+1+iw-tw, tw
+			if structured(st, c.agent, o, iw, ih) == nil {
+				_, _, tw := editorText(tab, c.agent, iw)
+				x0, w = t.Min.X+1+iw-tw, tw
+			}
 		}
 	}
 	r := image.Rect(x0, y0, x0+max(w, 0), max(y1, y0))

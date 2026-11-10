@@ -58,6 +58,9 @@ func Wheel(st *ide.State, o Options, width, height, x, y, n int) (string, int) {
 		base.Scroll = nil
 		tree, top := agentsView(st, camera(st), base, ih)
 		return agentsPaneKey, step(o.Scroll[agentsPaneKey], n, top-max(0, len(tree)-ih), top)
+	case !ok && o.Panel == Files && outlined(st, o, width, height) != nil:
+		rows, _, follow, _ := outlined(st, o, width, height).outline(o, ih)
+		return outlineKey, step(o.Scroll[outlineKey], n, follow-max(0, len(rows)-ih), follow)
 	case !ok && o.Panel == Files:
 		top := scrollTop(treeSel(st, camera(st)), len(st.Tree), ih)
 		return filesPane, step(o.Scroll[filesPane], n, top-max(0, len(st.Tree)-ih), top)
@@ -73,6 +76,10 @@ func Wheel(st *ide.State, o Options, width, height, x, y, n int) (string, int) {
 	tab := shownTab(st, c.agent)
 	if tab == nil {
 		return "", 0
+	}
+	if v := structured(st, c.agent, o, iw, ih); v != nil { // it follows the top of the spec
+		key := specKey(tab.Path)
+		return key, step(o.Scroll[key], n, -v.last, 0)
 	}
 	key := fileKey(tab.Path)
 	lines, cur, tw := editorText(tab, c.agent, iw)
@@ -92,12 +99,16 @@ func step(d, n, lo, hi int) int {
 }
 
 // Prune forgets the scroll of the panes Render(st, o, width, …) does not draw, so that one coming
-// back follows its agent.
+// back follows its agent. A spec keeps its scroll while its file is on screen, as written or not.
 func Prune(st *ide.State, o Options, width, height int) {
-	shown := map[string]bool{filesPane: o.Panel == Files, agentsPaneKey: o.Panel == Agents}
+	shown := map[string]bool{filesPane: o.Panel == Files, agentsPaneKey: o.Panel == Agents,
+		outlineKey: outlined(st, o, width, height) != nil}
 	terms := map[*ide.Term]bool{}
 	for _, c := range columns(st, camera(st), o, width-leftWidth(width), height) {
 		shown[paneKey(st, c)] = true
+		if tab := shownTab(st, c.agent); c.pane == ide.Editor && tab != nil {
+			shown[specKey(tab.Path)] = true
+		}
 		if c.pane == ide.Terminal {
 			terms[&c.agent.Term] = true
 		}

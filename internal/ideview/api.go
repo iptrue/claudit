@@ -22,6 +22,8 @@ type Options struct {
 	Now     time.Time // for durations, spinners and effects
 	Busy    bool      // the main agent is at work (its ide.Agent stays Running between turns)
 	Wrap    bool      // the editor wraps long lines instead of scrolling sideways
+	Raw     bool      // the editor shows OpenSpec specs as written, not structured
+	Specs   Specs     // how the user folded the specs shown structured
 	Scroll  Scroll    // how far the user scrolled the panes away from their agents
 	Terms   TermCache // wrapped row counts shared by rendering and mouse handling
 }

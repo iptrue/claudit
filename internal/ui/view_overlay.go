@@ -120,6 +120,7 @@ var drawHelpRows = [][2]string{
 	{"alt+0", "auto camera: follow the action"},
 	{"tab", "agents panel while agents work: ↑/↓ select, enter pin"},
 	{"alt+z", "word wrap in the editor on/off"},
+	{"alt+s", "OpenSpec specs structured or as written; a click folds a requirement or a scenario"},
 	{"", "Views"},
 	{"F1  /help", "this reference"},
 	{"ctrl+c", "clear the prompt, interrupt, or quit (twice)"},
