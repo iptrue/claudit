@@ -73,3 +73,21 @@ func TestDrawCache(t *testing.T) {
 		t.Errorf("shown before any call: %q", line)
 	}
 }
+
+// Squeezed, the status line gives up the model, then the limits; the context and the cache last.
+func TestStatusKeepsContextAndCache(t *testing.T) {
+	st := Status{Model: "claude-opus-5-5", Effort: "high", Mode: "auto", State: "idle", Usage: "5h 8% 4h34m · 7d 20% 5d17h",
+		Context: 0.05, CacheLeft: 3 * time.Minute, CacheTTL: 5 * time.Minute}
+	for w := 70; w <= 200; w++ {
+		line := ansi.Strip(renderStatus(st, nil, w))
+		if strings.Contains(line, "5h 8%") && !strings.Contains(line, "cache 3m") {
+			t.Fatalf("%d: the limits stay, the cache goes: %q", w, line)
+		}
+		if strings.Contains(line, "claude-opus") && !strings.Contains(line, "5h 8%") {
+			t.Fatalf("%d: the model stays, the limits go: %q", w, line)
+		}
+	}
+	if line := ansi.Strip(renderStatus(st, nil, 90)); !strings.Contains(line, "ctx 5% · cache 3m") || strings.Contains(line, "5h") {
+		t.Errorf("90 columns: %q", line)
+	}
+}

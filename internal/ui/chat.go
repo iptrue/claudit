@@ -303,13 +303,13 @@ func renderStatus(st Status, hints []string, width int) string {
 		parts = append(parts, part{mode, 0})
 	}
 	if st.Usage != "" {
-		parts = append(parts, part{drawUsage(st.Usage), 3})
+		parts = append(parts, part{drawUsage(st.Usage), 2})
 	}
 	if st.Context > 0 {
-		parts = append(parts, part{drawContext(st.Context), 2})
+		parts = append(parts, part{drawContext(st.Context), 3})
 	}
 	if st.CacheTTL > 0 {
-		parts = append(parts, part{drawCache(st.CacheLeft, st.CacheTTL), 2})
+		parts = append(parts, part{drawCache(st.CacheLeft, st.CacheTTL), 3})
 	}
 	if st.Replay {
 		parts = append(parts, part{styleFg.Render("replay"), 4})
