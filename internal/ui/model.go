@@ -54,6 +54,7 @@ type Model struct {
 
 	chatMax    int               // largest useful ChatScroll, written by View
 	chatLines  chatCache         // drawn chat entries, kept by View
+	chatView   chatView          // the chat as the last frame drew it, written by View
 	zones      []zone            // what clicks act on, written by View
 	sel        selection         // the text the mouse drags over; View writes what it covers
 	scroll     ideview.Scroll    // how far the wheel scrolled the IDE's panes; View forgets those it no longer draws
@@ -62,6 +63,7 @@ type Model struct {
 	inspection *inspection       // the IDE the user is reading during the interaction cooldown
 	ideHeight  int               // IDE height in the last frame; -1 before the first frame
 	mouseDown  bool              // a held button protects the view until five seconds after release
+	selTick    bool              // a drag held past the chat's edge scrolls it: a frame of it is on the way
 	send       func(protocol.Outbound)
 	queue      []Popup          // requests waiting behind the open popup
 	behind     string           // the state of main while "waiting for you" covers it
@@ -254,6 +256,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.onDrag = nil
+		if m.sel.chat && msg.Width != m.Width { // its lines wrap anew: what it held is gone
+			m.sel = selection{}
+		}
 		m.Width, m.Height = msg.Width, msg.Height
 	case tickMsg:
 		m.tick(time.Time(msg))
@@ -308,8 +313,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.onDrag(msg.X, msg.Y)
 			} else {
 				m.dragTo(msg.X, msg.Y)
+				cmd = m.holdSelScroll()
 			}
 		}
+	case selScrollMsg:
+		cmd = m.selScroll()
 	case tea.MouseReleaseMsg:
 		m.onDrag = nil
 		if m.mouseDown {
@@ -863,6 +871,11 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		default: // nothing left to cancel
 			return m.quitTwice("esc")
 		}
+	case "ctrl+a":
+		if len(m.Input.Text) == 0 { // nothing to go to the start of: the whole conversation
+			return m.selectChat()
+		}
+		m.Input.edit(k)
 	case "pgup":
 		m.scrollChat(10)
 	case "pgdown":
