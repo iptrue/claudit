@@ -106,6 +106,32 @@ func TestModelInputGrows(t *testing.T) {
 	}
 }
 
+// On a screen just tall enough for the IDE, a growing prompt keeps it: the conversation gives up
+// the rows, the IDE only those the conversation has not.
+func TestModelInputGrowsKeepsIDE(t *testing.T) {
+	m, _ := modelNew(t, false)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: drawIDEH + 2})         // a prompt of 4 rows at most
+	long := Input{Text: []rune(strings.Repeat("word ", 70)), Cursor: 350} // 4 rows of 94 cells
+	m.View()
+	empty := m.ideHeight
+	m.Input = long
+	m.View()
+	if m.ideHeight <= 0 || m.ideHeight != empty-3 {
+		t.Fatalf("no conversation: the IDE %d rows, %d before", m.ideHeight, empty)
+	}
+	for range 20 {
+		m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, Text: "said"})
+	}
+	m.chatLines, m.Input = chatCache{}, Input{}
+	m.View()
+	before := m.ideHeight
+	m.Input = long
+	m.View()
+	if m.ideHeight != before {
+		t.Fatalf("the conversation keeps its rows: the IDE %d rows, %d before", m.ideHeight, before)
+	}
+}
+
 // ↑ and ↓ move between the rows of a long prompt; from the first row ↑ recalls the history.
 func TestModelMoveRow(t *testing.T) {
 	m, _ := modelMouseNew(t) // 94 cells a row

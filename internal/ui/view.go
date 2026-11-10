@@ -59,7 +59,11 @@ func (m *Model) View() tea.View {
 	entries := m.chatEntries()
 	in, cx, cy := renderInputRows(&m.Input, w-4, "Ask claude…", m.PanelFocus, inputMaxRows(h))
 	extra := len(in) - 1 // the rows the prompt takes past its one
-	ideH, chatH := drawLayout(h-extra, drawChatCount(&m.chatLines, entries, w))
+	// Laid out as for a one-row prompt, so that the IDE stays as typing goes on: the conversation
+	// gives up the rows, the IDE only those the conversation has not.
+	ideH, chatH := drawLayout(h, drawChatCount(&m.chatLines, entries, w))
+	fromChat := min(extra, chatH)
+	ideH, chatH = ideH-(extra-fromChat), chatH-fromChat
 	if m.inspection != nil && h >= drawIDEH {
 		if m.inspection.height < 0 {
 			m.inspection.height = ideH

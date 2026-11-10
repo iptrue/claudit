@@ -194,7 +194,7 @@ func (m *Model) recall(d int) {
 // to the same column or the end of a shorter row, as Claude Code does, and reports whether it
 // did: from the first row up, or the last down, the keys walk the history instead.
 func (m *Model) moveRow(d int) bool {
-	if m.Height < drawMinH || inputMaxRows(m.Height) < 2 {
+	if inputMaxRows(m.Height) < 2 {
 		return false
 	}
 	runes, cursor := inputShown(&m.Input)
