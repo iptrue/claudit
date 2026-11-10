@@ -740,15 +740,14 @@ func TestModelMouseSelectWheel(t *testing.T) {
 	}
 }
 
-// modelSelectChat selects the whole conversation, as a drag over all of it would, and copies it.
+// modelSelectChat presses ctrl+a on the empty prompt: it selects the whole conversation and copies it.
 func modelSelectChat(m *Model) tea.Cmd {
-	b, n := m.chatView.box, len(m.chatText())
-	m.sel = selection{box: b, chat: true, drag: true, from: image.Pt(b.Min.X, 0), to: image.Pt(b.Max.X-1, n-1)}
-	return m.copySelection()
+	return m.handleKey(inputKey("ctrl+a"))
 }
 
-// The whole conversation selected is lit where it shows and copied whole, the lines scrolled off
-// too; a short chat is lit on the rows of its text, not the blanks over it.
+// With the prompt empty, ctrl+a selects the whole conversation, lit where it shows, and copies it
+// whole, the lines scrolled off too; a short chat is lit on the rows of its text, not the blanks
+// over it. No conversation: nothing to select.
 func TestModelMouseSelectWholeChat(t *testing.T) {
 	m := modelMouseLines(t, 60)
 	if cmd := modelSelectChat(m); cmd == nil {
@@ -775,6 +774,12 @@ func TestModelMouseSelectWholeChat(t *testing.T) {
 	_, y = modelMouseAt(t, m, "fix the bug")
 	if !strings.Contains(v[y], lit) || strings.Contains(v[y-1], lit) {
 		t.Errorf("short chat lit on rows %d and %d: %v %v", y-1, y, strings.Contains(v[y-1], lit), strings.Contains(v[y], lit))
+	}
+
+	m, _ = modelMouseNew(t)
+	m.View()
+	if cmd := modelSelectChat(m); cmd != nil || m.sel.drag {
+		t.Errorf("empty chat: copy %v, selecting %v", cmd != nil, m.sel.drag)
 	}
 }
 
@@ -854,13 +859,15 @@ func TestModelPromptSelectAll(t *testing.T) {
 	}
 }
 
-// ctrl+a goes to the start of the prompt, as in a shell, and selects nothing: cmux sends it for
-// cmd+left as well.
+// With text in the prompt ctrl+a goes to its start, as in a shell, and selects nothing, neither the
+// prompt nor the conversation: cmux sends it for cmd+left as well.
 func TestModelPromptCtrlAGoesToStart(t *testing.T) {
 	m, _ := modelMouseNew(t)
+	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "done"}}
+	m.View()
 	m.Input = Input{Text: []rune("fix it"), Cursor: 6}
-	if cmd := m.handleKey(inputKey("ctrl+a")); cmd != nil || m.Input.all || m.Input.Cursor != 0 {
-		t.Errorf("copy %v, selected %v, cursor %d", cmd != nil, m.Input.all, m.Input.Cursor)
+	if cmd := m.handleKey(inputKey("ctrl+a")); cmd != nil || m.Input.all || m.sel.drag || m.Input.Cursor != 0 {
+		t.Errorf("copy %v, selected %v, chat selected %v, cursor %d", cmd != nil, m.Input.all, m.sel.drag, m.Input.Cursor)
 	}
 	modelPress(m, inputTyped("x")...)
 	if got := string(m.Input.Text); got != "xfix it" {
@@ -1109,7 +1116,9 @@ func TestModelMouseSelectTrims(t *testing.T) {
 	m, _ := modelMouseNew(t)
 	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "```\nx := 1\nlonger := 2\n```"}}
 	m.View()
-	modelSelectChat(m)
+	if modelSelectChat(m) == nil || !strings.Contains(m.selText(), "longer := 2") {
+		t.Fatalf("nothing selected: %q", m.selText())
+	}
 	for _, row := range strings.Split(m.selText(), "\n") {
 		if strings.HasSuffix(row, " ") {
 			t.Errorf("%q ends in blanks", row)

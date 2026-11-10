@@ -877,7 +877,12 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		default: // nothing left to cancel
 			return m.quitTwice("esc")
 		}
-	case "super+a": // cmd+a: the whole prompt, selected and copied, as in a text field; ctrl+a goes to its start
+	case "ctrl+a": // the start, as in a shell; cmux sends it for cmd+left too
+		if len(m.Input.Text) == 0 { // nothing to go to the start of: the whole conversation
+			return m.selectChat()
+		}
+		m.Input.edit(k)
+	case "super+a": // cmd+a: the whole prompt, selected and copied, as in a text field
 		if len(m.Input.Text) == 0 {
 			return nil
 		}

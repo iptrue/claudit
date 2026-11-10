@@ -204,6 +204,13 @@ func (m *Model) selScroll() tea.Cmd {
 	return m.holdSelScroll()
 }
 
+// selectChat selects the whole conversation and copies it, as a drag over all of it would.
+func (m *Model) selectChat() tea.Cmd {
+	b, n := m.chatView.box, len(m.chatText()) // no conversation: copySelection finds nothing to copy
+	m.sel = selection{box: b, chat: true, drag: true, from: image.Pt(b.Min.X, 0), to: image.Pt(b.Max.X-1, n-1)}
+	return m.copySelection()
+}
+
 // selText is what the selection covers: in the chat, the text of every line it spans, on screen
 // or not, past the arrows and short of the times; elsewhere what the last frame drew. Under a
 // popup or the help nothing shows it: it covers nothing.

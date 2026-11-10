@@ -113,6 +113,7 @@ var drawHelpRows = [][2]string{
 	{"shift+tab", "permission mode: manual → accept edits → plan → auto; over a request, also answers what the new mode allows"},
 	{"pgup pgdn", "scroll the conversation (or the wheel)"},
 	{"drag", "select text in the conversation or a pane; letting go copies it; held past the conversation's top or bottom, it scrolls"},
+	{"ctrl+a", "on an empty prompt: select the whole conversation and copy it (in cmux, cmd+left too)"},
 	{"click", "what a Bash call does, in the conversation: where it ran, in the terminal"},
 	{"", "Questions and permissions"},
 	{"y  n", "allow, deny (esc denies too); ↑/↓ pgup/pgdn scroll; or click"},
