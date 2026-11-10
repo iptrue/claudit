@@ -364,4 +364,12 @@ func TestPasteInGoalAndBtw(t *testing.T) {
 	if p, ok := m.Popup.(*BtwPopup); !ok || p.Question != "a\nb\nc\nd" {
 		t.Errorf("btw popup %#v", m.Popup)
 	}
+	// A paste of nothing but blank lines asks nothing: /btw says how it is used.
+	m.Popup = nil
+	modelPress(m, inputTyped("/btw ")...)
+	modelPasteRun(m, "\n \n\n\n")
+	modelPress(m, inputKey("enter"))
+	if len(*sent) != 1 || m.Popup != nil {
+		t.Errorf("btw of blank lines: sent %#v popup %#v", *sent, m.Popup)
+	}
 }
