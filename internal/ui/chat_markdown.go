@@ -39,11 +39,15 @@ func drawMarkdown(src string, w int) []string {
 		case strings.HasPrefix(trimmed, "```"):
 			lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
 			for i++; i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```"); i++ {
-				code := ideview.Highlight(drawClean(lines[i]), lang)
+				if w-2 < 2 { // too narrow to wrap into anything readable
+					out = append(out, styleRule.Render("│ ")+drawFitTrunc(ideview.Highlight(drawClean(lines[i]), lang), w-2))
+					continue
+				}
 				// Wrapped at words as the prose is, the bar going on beside each part: cut, a
-				// long line lost its end (a draft to send, a command).
-				for _, part := range strings.Split(ansi.Wrap(code, max(1, w-2), ""), "\n") {
-					out = append(out, styleRule.Render("│ ")+drawFit(part, w-2))
+				// long line lost its end (a draft to send, a command). Each part is highlighted
+				// by itself, as drawDetail does, for a colour cut off at the wrap would not go on.
+				for _, part := range drawWrap(lines[i], w-2) {
+					out = append(out, styleRule.Render("│ ")+drawFit(ideview.Highlight(part, lang), w-2))
 				}
 			}
 		case trimmed == "":

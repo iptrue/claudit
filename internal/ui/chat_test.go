@@ -564,4 +564,15 @@ func TestDrawMarkdownCodeWraps(t *testing.T) {
 			t.Errorf("w %d: the code did not wrap: %q", w, lines)
 		}
 	}
+	// Each part keeps the code's colour, not only the first.
+	bar := styleRule.Render("│ ")
+	for _, l := range drawMarkdown("```go\nx := \"a very long string literal that goes on and on\" // comment\n```", 24) {
+		if part := strings.TrimPrefix(l, bar); !strings.HasPrefix(part, "\x1b[") {
+			t.Errorf("a part lost its colour: %q", l)
+		}
+	}
+	// Too narrow to wrap, a line is cut as before, not spread over lines of nothing.
+	if lines := drawMarkdown("```\nabc def\n```", 3); len(lines) != 1 {
+		t.Errorf("w 3: %q", lines)
+	}
 }
