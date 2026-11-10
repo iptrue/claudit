@@ -106,6 +106,8 @@ type Model struct {
 	limits    protocol.RateLimits // the rate-limit use claude reported last
 	cost      float64             // the session's cost in USD, as of the last turn
 	context   protocol.Context    // how full main's context was at its last model call
+	cacheAt   time.Time           // when main's last model call reached the API, keeping its prompt cache alive
+	cacheTTL  time.Duration       // how long the cache lives after a call, as the calls' cache writes tell
 	windows   map[string]int      // the context window of each model, from the turns' results
 	pending   []string            // prompts typed while claude works, held until a quiet period or its turn ends
 	pendingAt time.Time           // when a prompt was last queued or its edit saved
@@ -156,6 +158,9 @@ type Status struct {
 	Alert   bool   // State says what went wrong, such as an API error: red
 
 	Context float64 // fraction of main's context window in use; 0 until the window is known
+
+	CacheLeft time.Duration // how long main's prompt cache lives on; 0 once it has expired
+	CacheTTL  time.Duration // how long it lives after a call; 0 before the first call: not shown
 }
 
 // Popup is a modal question from the agent, *QuestionPopup or *PermissionPopup, or a list the
@@ -450,7 +455,7 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		}
 	case protocol.Reset:
 		m.Chat, m.chatLines, m.ChatScroll, m.btwSaid = nil, chatCache{}, 0, nil
-		m.context = protocol.Context{}
+		m.context, m.cacheAt = protocol.Context{}, time.Time{}
 		m.local("Conversation cleared")
 	case protocol.Thinking:
 		m.working("thinking")
@@ -521,6 +526,10 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.limits = ev
 	case protocol.Context:
 		m.context = ev
+		m.cacheAt = now.Add(-ev.TTFT)
+		if ev.CacheTTL > 0 {
+			m.cacheTTL = ev.CacheTTL
+		}
 		if ev.Model != "" { // what main's call runs on, a fallback's model too, not what the turn asked for
 			m.Status.Model = ev.Model
 			m.Sim.FindAgent("main").Model = ev.Model
