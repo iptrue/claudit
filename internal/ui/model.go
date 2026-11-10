@@ -760,7 +760,7 @@ func (m *Model) working(state string) {
 
 func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 	all := m.Input.all
-	m.Input.all = false // a key drops the selection of the whole prompt; ctrl+a, typing and deleting act on it
+	m.Input.all = false // a key drops the selection of the whole prompt; cmd+a, typing and deleting act on it
 	if k.String() == "ctrl+c" {
 		if _, ok := m.Popup.(*QuitPopup); ok {
 			m.cancelQuit()
@@ -877,7 +877,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		default: // nothing left to cancel
 			return m.quitTwice("esc")
 		}
-	case "ctrl+a": // the whole prompt, selected and copied; home goes to its start
+	case "super+a": // cmd+a: the whole prompt, selected and copied, as in a text field; ctrl+a goes to its start
 		if len(m.Input.Text) == 0 {
 			return nil
 		}

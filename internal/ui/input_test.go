@@ -64,7 +64,7 @@ func TestInputKeyNames(t *testing.T) {
 	for _, name := range []string{"enter", "esc", "tab", "backspace", "delete", "left", "right", "up", "down",
 		"home", "end", "pgup", "pgdown", "space", "ctrl+c", "ctrl+w", "ctrl+u", "ctrl+a", "ctrl+e", "y",
 		"f2", "alt+1", "alt+0", "shift+tab", "ctrl+left", "alt+left", "super+left", "alt+backspace",
-		"super+backspace", "alt+b"} {
+		"super+backspace", "alt+b", "super+a"} {
 		if got := inputKey(name).String(); got != name {
 			t.Errorf("inputKey(%q).String() = %q", name, got)
 		}
@@ -144,7 +144,7 @@ func TestInputEditReportsUnhandledKeys(t *testing.T) {
 func TestInputLineEditingInPrompt(t *testing.T) {
 	m, _ := modelNew(t, false)
 	modelPress(m, inputTyped("fix the bug")...)
-	modelPress(m, inputKeys("alt+b ctrl+k home ctrl+d ctrl+e ctrl+y")...)
+	modelPress(m, inputKeys("alt+b ctrl+k ctrl+a ctrl+d ctrl+e ctrl+y")...)
 	if got := string(m.Input.Text); got != "ix the bug" || m.Input.Cursor != 10 {
 		t.Errorf("prompt %q cursor %d", got, m.Input.Cursor)
 	}

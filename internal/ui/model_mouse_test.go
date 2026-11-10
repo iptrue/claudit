@@ -778,14 +778,14 @@ func TestModelMouseSelectWholeChat(t *testing.T) {
 	}
 }
 
-// ctrl+a selects the whole prompt, lit, and copies it, its pasted texts in place of their
+// cmd+a selects the whole prompt, lit, and copies it, its pasted texts in place of their
 // placeholders; typing then replaces it, a key that deletes clears it (ctrl+y puts it back), a
 // paste goes in place of it, and another key acts as with nothing selected. An empty prompt has
 // nothing to select.
 func TestModelPromptSelectAll(t *testing.T) {
 	m, _ := modelMouseNew(t)
 	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "done"}}
-	if cmd := m.handleKey(inputKey("ctrl+a")); cmd != nil || m.Input.all {
+	if cmd := m.handleKey(inputKey("super+a")); cmd != nil || m.Input.all {
 		t.Errorf("empty prompt: copy %v, selected %v", cmd != nil, m.Input.all)
 	}
 	m.paste(strings.Repeat("pasted line\n", 12))
@@ -800,7 +800,7 @@ func TestModelPromptSelectAll(t *testing.T) {
 	var copied string
 	defer func(w func(string) error) { writeClipboard = w }(writeClipboard)
 	writeClipboard = func(s string) error { copied = s; return nil }
-	cmd := m.handleKey(inputKey("ctrl+a"))
+	cmd := m.handleKey(inputKey("super+a"))
 	if cmd == nil || !m.Input.all {
 		t.Fatalf("copy %v, selected %v", cmd != nil, m.Input.all)
 	}
@@ -824,7 +824,7 @@ func TestModelPromptSelectAll(t *testing.T) {
 	}
 
 	for _, key := range []string{"backspace", "delete", "ctrl+u", "ctrl+k", "ctrl+w"} {
-		m.handleKey(inputKey("ctrl+a"))
+		m.handleKey(inputKey("super+a"))
 		m.handleKey(inputKey(key))
 		if len(m.Input.Text) != 0 || m.Input.all {
 			t.Errorf("%s: %q selected %v", key, string(m.Input.Text), m.Input.all)
@@ -836,7 +836,7 @@ func TestModelPromptSelectAll(t *testing.T) {
 	}
 
 	m.Input = Input{Text: []rune("fresh"), Cursor: 5} // nothing killed yet
-	m.handleKey(inputKey("ctrl+a"))
+	m.handleKey(inputKey("super+a"))
 	m.Update(tea.PasteMsg{Content: "pasted"})
 	if got := string(m.Input.Text); got != "pasted" || m.Input.all {
 		t.Errorf("paste: %q selected %v", got, m.Input.all)
@@ -847,10 +847,29 @@ func TestModelPromptSelectAll(t *testing.T) {
 	}
 	m.Input = Input{Text: []rune("pasted"), Cursor: 6}
 
-	m.handleKey(inputKey("ctrl+a"))
+	m.handleKey(inputKey("super+a"))
 	m.handleKey(inputKey("left"))
 	if got := string(m.Input.Text); got != "pasted" || m.Input.all || m.Input.Cursor != 5 {
 		t.Errorf("left: %q cursor %d selected %v", got, m.Input.Cursor, m.Input.all)
+	}
+}
+
+// ctrl+a goes to the start of the prompt, as in a shell, and selects nothing: cmux sends it for
+// cmd+left as well.
+func TestModelPromptCtrlAGoesToStart(t *testing.T) {
+	m, _ := modelMouseNew(t)
+	m.Input = Input{Text: []rune("fix it"), Cursor: 6}
+	if cmd := m.handleKey(inputKey("ctrl+a")); cmd != nil || m.Input.all || m.Input.Cursor != 0 {
+		t.Errorf("copy %v, selected %v, cursor %d", cmd != nil, m.Input.all, m.Input.Cursor)
+	}
+	modelPress(m, inputTyped("x")...)
+	if got := string(m.Input.Text); got != "xfix it" {
+		t.Errorf("typed at the start: %q", got)
+	}
+	m.handleKey(inputKey("super+a"))
+	m.handleKey(inputKey("ctrl+a"))
+	if got := string(m.Input.Text); got != "xfix it" || m.Input.all || m.Input.Cursor != 0 {
+		t.Errorf("cmd+a then ctrl+a: %q selected %v cursor %d", got, m.Input.all, m.Input.Cursor)
 	}
 }
 
@@ -1159,7 +1178,7 @@ func TestModelPromptSelectAllKeys(t *testing.T) {
 		m, _ := modelMouseNew(t)
 		modelPress(m, inputTyped("one two three")...)
 		modelPress(m, inputKeys("left left left left left left left")...) // mid "two"
-		m.handleKey(inputKey("ctrl+a"))
+		m.handleKey(inputKey("super+a"))
 		m.handleKey(inputKey(key))
 		want := ""
 		if key == "x" {
@@ -1183,7 +1202,7 @@ func TestModelPromptSelectAllLit(t *testing.T) {
 	for _, c := range []struct{ text, first string }{{"fix it", "f"}, {"!ls -la", "!"}} {
 		m, _ := modelMouseNew(t)
 		modelPress(m, inputTyped(c.text)...)
-		m.handleKey(inputKey("ctrl+a"))
+		m.handleKey(inputKey("super+a"))
 		_, y := modelMouseAt(t, m, c.text[1:])
 		row := strings.Split(m.View().Content, "\n")[y]
 		at := strings.Index(row, lit)
@@ -1195,7 +1214,7 @@ func TestModelPromptSelectAllLit(t *testing.T) {
 	// Under the help or a popup the prompt shows as with nothing selected.
 	m, _ := modelMouseNew(t)
 	modelPress(m, inputTyped("fix it")...)
-	m.handleKey(inputKey("ctrl+a"))
+	m.handleKey(inputKey("super+a"))
 	m.sel = selection{} // no note of the copy: only the prompt differs
 	under := func(name string) {
 		selected := m.View().Content
@@ -1228,7 +1247,7 @@ func TestModelPromptSelectAllDropped(t *testing.T) {
 	} {
 		m, _ := modelMouseNew(t)
 		modelPress(m, inputTyped("keep")...)
-		m.handleKey(inputKey("ctrl+a"))
+		m.handleKey(inputKey("super+a"))
 		step.do(m)
 		modelPress(m, inputTyped("x")...)
 		if got := string(m.Input.Text); got != "keepx" {
@@ -1238,7 +1257,7 @@ func TestModelPromptSelectAllDropped(t *testing.T) {
 
 	m, _ := modelMouseNew(t)
 	modelPress(m, inputTyped("keep")...)
-	m.handleKey(inputKey("ctrl+a"))
+	m.handleKey(inputKey("super+a"))
 	m.pasted(imagesMsg{images: []protocol.Image{{Media: "image/png", Data: []byte{0}}}})
 	if got := string(m.Input.Text); !strings.HasPrefix(got, "keep[Image #") || m.Input.all {
 		t.Errorf("picture: %q selected %v", got, m.Input.all)
