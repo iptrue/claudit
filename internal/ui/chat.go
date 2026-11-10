@@ -23,6 +23,9 @@ var styleYou = lipgloss.NewStyle().Foreground(theme.Blue)
 // styleBash is the colour of what a Bash call of main's says it does: the green of strings in code.
 var styleBash = lipgloss.NewStyle().Foreground(theme.String)
 
+// styleBang marks the shell mode of the prompt, a "!" first, pink as in Claude Code.
+var styleBang = lipgloss.NewStyle().Foreground(theme.Pink)
+
 // chatCache keeps the drawn lines of each chat entry, so a frame redraws only the entries that changed.
 type chatCache struct {
 	width   int
@@ -248,10 +251,18 @@ func renderInput(in *Input, width int, placeholder string, dim bool) (out string
 	if dim {
 		prompt, text = styleDim.Render("› "), styleDim
 	}
-	if len(in.Text) == 0 {
+	runes, cursor := in.Text, in.Cursor
+	if bangInput(runes) { // the shell mode: its "!" stands in for the "›"
+		prompt, runes, cursor = styleBang.Render("! "), runes[1:], max(0, cursor-1)
+		if dim {
+			prompt = styleDim.Render("! ")
+		}
+		placeholder = "a shell command, run in the project"
+	}
+	if len(runes) == 0 {
 		return drawFit(prompt+styleDim.Render(placeholder), width), min(2, width-1)
 	}
-	disp, cur := drawInputRunes(in.Text, in.Cursor)
+	disp, cur := drawInputRunes(runes, cursor)
 	start := drawScroll(disp, cur, width-2)
 	shown := ansi.Truncate(string(disp[start:]), max(0, width-2), "")
 	x := 2 + ansi.StringWidth(string(disp[start:cur]))

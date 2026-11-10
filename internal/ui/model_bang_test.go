@@ -307,3 +307,43 @@ func slicesAnyContains(chat []ChatEntry, s string) bool {
 	}
 	return false
 }
+
+// A "!" first puts the prompt in the shell mode: the "!" stands in for the "›", once.
+func TestRenderInputBang(t *testing.T) {
+	for _, c := range []struct {
+		text   string
+		cursor int
+		want   string
+		x      int
+	}{
+		{"!git status", 11, "! git status", 12},
+		{"!git status", 1, "! git status", 2},
+		{"!git status", 0, "! git status", 2},
+		{"!", 1, "! a shell command, run in the project", 2},
+		{"git!", 4, "› git!", 6},
+	} {
+		out, x := renderInput(&Input{Text: []rune(c.text), Cursor: c.cursor}, 60, "Ask claude…", false)
+		if got := strings.TrimRight(ansi.Strip(out), " "); got != c.want || x != c.x {
+			t.Errorf("%q at %d: %q x=%d, want %q x=%d", c.text, c.cursor, got, x, c.want, c.x)
+		}
+	}
+	if on, off := renderInput(&Input{Text: []rune("!ls"), Cursor: 3}, 60, "", false); on == "" || off != 4 {
+		t.Errorf("focused: %q %d", on, off)
+	}
+	if dim, _ := renderInput(&Input{Text: []rune("!ls"), Cursor: 3}, 60, "", true); !strings.HasPrefix(ansi.Strip(dim), "! ls") {
+		t.Errorf("out of focus: %q", ansi.Strip(dim))
+	}
+}
+
+// The shell mode says so where the key hints go; backspace over its "!" ends it.
+func TestModelBangMode(t *testing.T) {
+	m, _ := modelMouseNew(t)
+	modelPress(m, inputTyped("!ls")...)
+	if out := ansi.Strip(m.View().Content); !strings.Contains(out, "! for shell mode") || !strings.Contains(out, "! ls") {
+		t.Fatalf("shell mode not shown:\n%s", out)
+	}
+	modelPress(m, inputKey("home"), inputKey("delete"))
+	if out := ansi.Strip(m.View().Content); strings.Contains(out, "! for shell mode") || !strings.Contains(out, "› ls") {
+		t.Fatalf("still in the shell mode:\n%s", out)
+	}
+}

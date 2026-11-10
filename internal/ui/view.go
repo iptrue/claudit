@@ -39,6 +39,7 @@ var (
 	drawHintsSuggest = []string{"↑/↓ pick", "tab complete", "enter run", "esc clear"}
 	drawHintsHelp    = []string{"esc close"}
 	drawHintsPanel   = []string{"↑/↓ select", "enter pin", "alt+0 auto", "tab back"}
+	drawHintsBang    = []string{"! for shell mode"}
 )
 
 func (m *Model) View() tea.View {
@@ -117,6 +118,8 @@ func (m *Model) View() tea.View {
 		hints = drawHintsHelp
 	case len(m.Suggest) > 0:
 		hints = drawHintsSuggest
+	case bangInput(m.Input.Text) && !m.PanelFocus:
+		hints = drawHintsBang
 	}
 	chat, chatMax, shown := renderChat(&m.chatLines, entries, w, chatH, m.ChatScroll)
 	m.chatMax = chatMax
@@ -140,7 +143,11 @@ func (m *Model) View() tea.View {
 		parts = append(parts, chat)
 	}
 	m.Status.Noted = m.sel.noted(m.Now)
-	parts = append(parts, strings.Join(drawBox([]string{in}, w-4, theme.Border), "\n"), renderStatus(m.Status, hints, w))
+	border := theme.Border
+	if bangInput(m.Input.Text) && !m.PanelFocus {
+		border = theme.Pink // the shell mode, as Claude Code marks it
+	}
+	parts = append(parts, strings.Join(drawBox([]string{in}, w-4, border), "\n"), renderStatus(m.Status, hints, w))
 	base := strings.Join(parts, "\n")
 
 	under := []*lipgloss.Layer{lipgloss.NewLayer(base)}

@@ -44,6 +44,9 @@ type bangDoneMsg struct {
 	err            error // it could not start, or it ran out of time
 }
 
+// bangInput reports whether the prompt is in the shell mode: a "!" first.
+func bangInput(text []rune) bool { return len(text) > 0 && text[0] == '!' }
+
 // bangCommand reports the command of a prompt typed as "!command".
 func bangCommand(text string) (string, bool) {
 	rest, ok := strings.CutPrefix(strings.TrimSpace(text), "!")
