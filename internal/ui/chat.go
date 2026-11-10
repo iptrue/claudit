@@ -444,7 +444,8 @@ const defaultCacheTTL = 5 * time.Minute
 
 // drawCache is how long main's prompt cache lives on, in few cells: "cache" grey, then minutes
 // ("4m"), minutes and seconds in the last two ("1:45"), coloured by drawFull as the time runs
-// out; "cold" once it has expired, when the next prompt writes the whole context anew.
+// out; "cold" once it has expired, when the next prompt writes anew what was cached for that
+// long: the whole context, or the part written for five minutes when a call wrote for an hour too.
 func drawCache(left, ttl time.Duration) string {
 	if left <= 0 {
 		return styleDim.Render("cache cold")

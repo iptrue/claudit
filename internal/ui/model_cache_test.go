@@ -41,6 +41,33 @@ func TestModelCache(t *testing.T) {
 	}
 }
 
+// Another model, or another conversation resumed, has no cache of what main says: no timer until its first call.
+func TestModelCacheOtherModelOrConversation(t *testing.T) {
+	m, _ := modelResumeNew(t)
+	modelEvents(m, protocol.Context{Model: "m", Tokens: 10})
+	modelEvents(m, protocol.ModelChanged{Model: "m"}) // the same model: its cache lives on
+	if _, ttl := modelCacheAt(m, time.Minute); ttl == 0 {
+		t.Fatalf("the same model forgets the cache")
+	}
+	modelEvents(m, protocol.ModelChanged{Model: "n"})
+	if _, ttl := modelCacheAt(m, time.Minute); ttl != 0 {
+		t.Fatalf("after /model: %s", ttl)
+	}
+	modelEvents(m, protocol.Context{Model: "n", Tokens: 10})
+	if _, ttl := modelCacheAt(m, time.Minute); ttl == 0 {
+		t.Fatalf("the new model's call starts no timer")
+	}
+	modelResumeSubmit(m, "/resume")
+	_, cmd := m.Update(inputKey("enter"))
+	modelResumeRun(m, cmd)
+	if !modelResumeSaid(m, "Resumed: ") {
+		t.Fatalf("not resumed: %+v", m.Chat)
+	}
+	if _, ttl := modelCacheAt(m, time.Minute); ttl != 0 {
+		t.Fatalf("after /resume: %s", ttl)
+	}
+}
+
 func TestDrawCache(t *testing.T) {
 	for _, c := range []struct {
 		left, ttl time.Duration

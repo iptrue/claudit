@@ -393,6 +393,10 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.setMode(ev.Mode)
 	case protocol.ModelChanged:
 		m.Status.Model = ev.Model // the status says it: the chat need not
+		// The cache is the old model's: the new one's first call writes it anew.
+		if ev.Model != m.context.Model {
+			m.cacheAt = time.Time{}
+		}
 		// Each model has an effort of its own. Asked only now: claude answers get_settings
 		// before a set_model sent ahead of it.
 		m.send(protocol.GetSettings{RequestID: fmt.Sprintf("settings-%d", m.modelReqs)})
