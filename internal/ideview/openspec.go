@@ -3,6 +3,7 @@ package ideview
 import (
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -26,12 +27,14 @@ type section struct {
 
 type requirement struct {
 	name      string // without the "Requirement:" keyword
+	key       string // what its fold is kept by: its section's title and its name
 	body      []block
 	scenarios []*scenario
 }
 
 type scenario struct {
 	name  string // without the "Scenario:" keyword
+	key   string // what its fold is kept by: its requirement's key and its name
 	steps []block
 }
 
@@ -43,7 +46,7 @@ const (
 	blockStep                     // a scenario's step: a keyword, then the text
 	blockQuote                    // a "> " quote, its lines joined
 	blockHeading                  // a heading the spec does not structure
-	blockCode                     // a line of a fenced block, as written
+	blockCode                     // a line of a fenced block, a table or a rule, as written
 )
 
 type block struct {
@@ -58,6 +61,7 @@ var (
 	specStepRe  = regexp.MustCompile(`^\s*[-*]\s+\*\*(WHEN|THEN|AND|GIVEN|BUT|OR)\*\*:?\s*(.*)$`)
 	specItemRe  = regexp.MustCompile(`^\s*([-*+]|\d{1,3}[.)])\s`)
 	specLabelRe = regexp.MustCompile(`^\*\*[^*]+\*\*:`) // "**Reason**: …" starts a line of its own
+	specRuleRe  = regexp.MustCompile(`^(-[ \t]*){3,}$|^(\*[ \t]*){3,}$|^(_[ \t]*){3,}$`)
 )
 
 // specPath is the capability of the OpenSpec spec at path, and whether it is a change's delta;
@@ -83,10 +87,11 @@ func specPath(path string) (capability string, delta, ok bool) {
 	return capability, true, capability != ""
 }
 
-// parseSpec reads the lines of a spec. Nothing is dropped: a line the format does not know stays
-// as text where it is.
-func parseSpec(lines []string) *spec {
-	sp := &spec{}
+// parseSpec reads the lines of a spec, a change's delta or not. Nothing is dropped: a line the
+// format does not know stays as text where it is; a fenced block, a table and a rule stay as
+// written, line by line.
+func parseSpec(lines []string, delta bool) *spec {
+	sp := &spec{delta: delta}
 	var sec *section
 	var req *requirement
 	var sc *scenario
@@ -106,20 +111,30 @@ func parseSpec(lines []string) *spec {
 		*to = append(*to, b)
 		last = &(*to)[len(*to)-1]
 	}
-	fence := false
+	seen := map[string]int{}
+	key := func(k string) string { // a name repeated in its section or requirement gets its count
+		if seen[k]++; seen[k] > 1 {
+			return k + "\n#" + strconv.Itoa(seen[k])
+		}
+		return k
+	}
+	fence := "" // the marker of the fenced block the lines are in; "" for none
 	for _, line := range lines {
 		line = strings.TrimRight(line, " \t\r")
 		trimmed := strings.TrimSpace(line)
-		marker := strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
-		if marker {
-			fence = !fence
-		}
-		if fence || marker { // a fenced block stays as written, line by line
+		indented := strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") // neither a heading nor a fence
+		if m := fenceOf(trimmed); fence != "" || m != "" && !indented || strings.HasPrefix(trimmed, "|") || specRuleRe.MatchString(trimmed) {
+			switch {
+			case fence == "" && m != "" && !indented:
+				fence = m
+			case fence != "" && m != "" && trimmed == m && m[0] == fence[0] && len(m) >= len(fence):
+				fence = ""
+			}
 			add(block{kind: blockCode, text: line})
 			last = nil
 			continue
 		}
-		if m := specHeadRe.FindStringSubmatch(trimmed); m != nil {
+		if m := specHeadRe.FindStringSubmatch(trimmed); m != nil && !indented {
 			last = nil
 			title := strings.TrimSpace(m[2])
 			reqName, isReq := strings.CutPrefix(title, "Requirement:")
@@ -127,7 +142,10 @@ func parseSpec(lines []string) *spec {
 			switch {
 			case len(m[1]) == 2:
 				blank = false
-				sec = &section{title: title, op: deltaOp(title)}
+				sec = &section{title: title}
+				if delta {
+					sec.op = deltaOp(title)
+				}
 				sp.sections = append(sp.sections, sec)
 				req, sc = nil, nil
 			case len(m[1]) == 3 && isReq:
@@ -136,11 +154,13 @@ func parseSpec(lines []string) *spec {
 					sp.sections = append(sp.sections, sec)
 				}
 				blank = false
-				req, sc = &requirement{name: strings.TrimSpace(reqName)}, nil
+				name := strings.TrimSpace(reqName)
+				req, sc = &requirement{name: name, key: key(sec.title + "\n" + name)}, nil
 				sec.reqs = append(sec.reqs, req)
 			case len(m[1]) == 4 && isScen && req != nil:
 				blank = false
-				sc = &scenario{name: strings.TrimSpace(scName)}
+				name := strings.TrimSpace(scName)
+				sc = &scenario{name: name, key: key(req.key + "\n" + name)}
 				req.scenarios = append(req.scenarios, sc)
 			default:
 				add(block{kind: blockHeading, text: title})
@@ -173,8 +193,19 @@ func parseSpec(lines []string) *spec {
 	return sp
 }
 
+// fenceOf is the marker of a fence that s starts with: three or more backticks or tildes; ""
+// for none.
+func fenceOf(s string) string {
+	for _, c := range []string{"`", "~"} {
+		if n := len(s) - len(strings.TrimLeft(s, c)); n >= 3 {
+			return s[:n]
+		}
+	}
+	return ""
+}
+
 // deltaOp is what a section of a delta titled title does: ADDED, MODIFIED, REMOVED or RENAMED;
-// "" for a section of a main spec.
+// "" for another title.
 func deltaOp(title string) string {
 	op, _, _ := strings.Cut(title, " ")
 	switch op = strings.ToUpper(op); op {

@@ -3,8 +3,10 @@ package ideview
 import (
 	"fmt"
 	"image/color"
+	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -57,16 +59,9 @@ func (s Specs) Fold(h SpecHit) {
 	}
 }
 
-// The fold keys: a requirement by its section and name, a scenario by its requirement and name,
-// so that an edit elsewhere in the file keeps them.
-func reqKey(s *section, r *requirement) string { return s.title + "\n" + r.name }
-func scenarioKey(s *section, r *requirement, sc *scenario) string {
-	return reqKey(s, r) + "\n" + sc.name
-}
-
 // reqOpen reports whether requirement j of s is open in folds.
 func reqOpen(folds map[string]bool, s *section, j int) bool {
-	if open, ok := folds[reqKey(s, s.reqs[j])]; ok {
+	if open, ok := folds[s.reqs[j].key]; ok {
 		return open
 	}
 	return j == 0
@@ -76,11 +71,43 @@ func reqOpen(folds map[string]bool, s *section, j int) bool {
 // top of the spec while the file as written follows the caret.
 func specKey(path string) string { return "spec:" + path }
 
+// SpecCache keeps the specs shown structured as the last frame laid them out, by path: a frame
+// draws, scrolls and clicks the same spec several times.
+type SpecCache map[string]*specLayout
+
+// specLayout is a spec laid out, and what from: its text, the width and what was open.
+type specLayout struct {
+	lines []string
+	doc   *spec
+	width int
+	folds map[string]bool
+	rows  []specRow
+}
+
+// laidOut is the spec of tab, of capability, a delta or not, laid out w cells wide with folds
+// open: the last frame's, unless the text, the width or the folds changed.
+func (o Options) laidOut(tab *ide.Tab, capability string, delta bool, folds map[string]bool, w int) *specLayout {
+	l := o.SpecRows[tab.Path]
+	if l == nil || l.doc.delta != delta || !slices.Equal(l.lines, tab.Buf.Lines) {
+		l = &specLayout{doc: parseSpec(tab.Buf.Lines, delta), width: -1}
+		l.doc.capability = capability
+		if o.SpecRows != nil {
+			l.lines = slices.Clone(tab.Buf.Lines)
+			o.SpecRows[tab.Path] = l
+		}
+	}
+	if l.width != w || !maps.Equal(l.folds, folds) {
+		l.rows, l.width, l.folds = l.doc.layout(folds, w), w, maps.Clone(folds)
+	}
+	return l
+}
+
 // specView is an OpenSpec spec as an editor shows it structured: its rows, and the window on them.
 type specView struct {
 	path      string
 	doc       *spec
 	folds     map[string]bool
+	width     int // of the rows
 	rows      []specRow
 	top, last int // the first row shown, and the last it can be
 }
@@ -97,13 +124,11 @@ func structured(st *ide.State, a *ide.Agent, o Options, iw, ih int) *specView {
 	if !ok || editing(st, tab, o) {
 		return nil
 	}
-	doc := parseSpec(tab.Buf.Lines)
-	if n, _ := doc.counts(); n == 0 {
+	l := o.laidOut(tab, capability, delta, o.Specs[tab.Path], textWidth(iw))
+	if n, _ := l.doc.counts(); n == 0 {
 		return nil
 	}
-	doc.capability, doc.delta = capability, delta
-	v := &specView{path: tab.Path, doc: doc, folds: o.Specs[tab.Path]}
-	v.rows = doc.layout(v.folds, textWidth(iw))
+	v := &specView{path: tab.Path, doc: l.doc, folds: o.Specs[tab.Path], width: l.width, rows: l.rows}
 	v.last = max(0, len(v.rows)-ih)
 	v.top = scrolled(0, o.Scroll[specKey(tab.Path)], v.last)
 	return v
@@ -111,13 +136,14 @@ func structured(st *ide.State, a *ide.Agent, o Options, iw, ih int) *specView {
 
 // editing reports whether an agent at work edits tab: types in it, selects what it replaces, or
 // waits for the result of what it typed. The editor shows the file as written then, so that the
-// edit shows.
+// edit shows. What an agent types in its terminal or its browser is no edit.
 func editing(st *ide.State, tab *ide.Tab, o Options) bool {
 	if tab.Buf.Modified {
 		return true
 	}
 	for key, c := range tab.Buf.Carets {
-		if a := findAgent(st, key); a != nil && (typing(a, o) || c.Sel != nil && working(a, o)) {
+		a := findAgent(st, key)
+		if a != nil && (typing(a, o) && a.Focus == ide.Editor && a.File == tab.Path || c.Sel != nil && working(a, o)) {
 			return true
 		}
 	}
@@ -232,25 +258,28 @@ func (b *specLines) add(first, hang string, spans ...span) {
 	}
 }
 
-// gap puts a blank row, unless there is none above or the row above is blank.
-func (b *specLines) gap() {
+// noRow is a row that is nothing of the spec's.
+var noRow = specRow{sec: -1, req: -1, scen: -1}
+
+// gap puts a blank row that is what at is, unless there is no row above or the row above is blank.
+func (b *specLines) gap(at specRow) {
 	if n := len(b.rows); n > 0 && !b.rows[n-1].blank() {
-		b.rows = append(b.rows, specRow{sec: -1, req: -1, scen: -1})
+		b.rows = append(b.rows, specRow{kind: at.kind, sec: at.sec, req: at.req, scen: at.scen})
 	}
 }
 
 // layout lays sp out w cells wide, what is open in folds open.
 func (sp *spec) layout(folds map[string]bool, w int) []specRow {
-	b := &specLines{w: max(w, 1), at: specRow{sec: -1, req: -1, scen: -1}}
+	b := &specLines{w: max(w, 1), at: noRow}
 	top := []span{{sp.capability, specCapStyle}}
 	if sp.delta {
 		top = append(top, span{"  ·  delta", dimStyle})
 	}
 	b.add("", "", top...)
-	b.gap()
+	b.gap(noRow)
 	b.blocks(sp.lead, "", "", "")
 	for i, s := range sp.sections {
-		b.gap()
+		b.gap(noRow)
 		c := opColor(s.op)
 		if label := sectionLabel(s); label != "" {
 			b.at = specRow{kind: rowSection, sec: i, req: -1, scen: -1}
@@ -259,7 +288,7 @@ func (sp *spec) layout(folds map[string]bool, w int) []specRow {
 				spans = append(spans, span{"  " + count(len(s.reqs), "requirement"), dimStyle})
 			}
 			b.add("", "", spans...)
-			b.gap()
+			b.gap(noRow)
 		}
 		b.at = specRow{sec: i, req: -1, scen: -1}
 		b.blocks(s.text, "", "", "")
@@ -279,10 +308,10 @@ func (sp *spec) layout(folds map[string]bool, w int) []specRow {
 func (b *specLines) requirement(s *section, i, j int, folds map[string]bool, bar string) {
 	r := s.reqs[j]
 	open := reqOpen(folds, s, j)
-	if open {
-		b.gap()
-	}
 	b.at = specRow{kind: rowReq, sec: i, req: j, scen: -1}
+	if open { // the blank row above it is its own: a second click where the first was folds it back
+		b.gap(b.at)
+	}
 	if !open {
 		b.add(bar+dimStyle.Render("▸ "), bar+"  ", span{r.name, specNameStyle},
 			span{"  · " + count(len(r.scenarios), "scenario"), dimStyle})
@@ -297,7 +326,7 @@ func (b *specLines) requirement(s *section, i, j int, folds map[string]bool, bar
 	for k, sc := range r.scenarios {
 		b.at = specRow{kind: rowScenario, sec: i, req: j, scen: k}
 		lead := bar + "  "
-		if !folds[scenarioKey(s, r, sc)] {
+		if !folds[sc.key] {
 			b.add(lead+dimStyle.Render("▸ "), lead+"  ", span{sc.name, fgStyle},
 				span{"  · " + count(sc.stepCount(), "step"), dimStyle})
 			continue
@@ -306,7 +335,7 @@ func (b *specLines) requirement(s *section, i, j int, folds map[string]bool, bar
 		b.at.kind = rowText
 		b.blocks(sc.steps, bar+"    ", bar, "       ")
 	}
-	b.gap()
+	b.gap(noRow)
 }
 
 // blocks puts bs after lead: a step's keyword right-aligned in 5 cells, its text after it; the

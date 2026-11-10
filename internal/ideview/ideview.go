@@ -49,13 +49,13 @@ func RenderWithScrollbars(st *ide.State, o Options, width, height int) (string, 
 	ew := leftWidth(width)
 	rw := width - ew
 	var left []string
-	switch v := outlined(st, o, width, height); {
+	switch v := beside(st, o, width, height); {
 	case o.Panel == Agents:
 		left = agentsPane(st, cam, o, ew, height)
-	case v != nil:
+	case v != nil && !o.Explorer:
 		left = outlinePane(v, o, ew, height)
 	default:
-		left = explorerPane(st, cam, o, ew, height)
+		left = explorerPane(st, cam, o, ew, height, v != nil)
 	}
 	lines := slices.Clone(left)
 	cols := columns(st, cam, o, rw, height)
@@ -172,7 +172,9 @@ func agentColor(a *ide.Agent) color.Color {
 	return theme.Agents[(a.Color%n+n)%n]
 }
 
-func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
+// explorerPane draws the files in the left column, w×h cells; beside a spec its title offers the
+// spec's outline in their place.
+func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int, outline bool) []string {
 	iw, ih := inner(w, h)
 	sel, lit := treeSel(st, cam), cam.Focus == ide.Explorer
 	if st.Viewed != "" { // the user's pick while it fills the right column; the scroll stays put
@@ -222,6 +224,9 @@ func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 			base.Foreground(nc).Render(name) + base.Foreground(theme.Yellow).Render(mark) + base.Render(pad)
 	}
 	title := " " + fgStyle.Render(clip(filepath.Base(st.Root), iw, "")) + " "
+	if outline {
+		title = switchTitle("files", "outline")
+	}
 	return frame(w, h, theme.Border, title, rows)
 }
 

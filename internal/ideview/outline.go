@@ -2,6 +2,7 @@ package ideview
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 
 	"charm.land/lipgloss/v2"
@@ -11,12 +12,21 @@ import (
 	"github.com/pixelbender/claudit/internal/theme"
 )
 
-// outlineKey is the scroll key of the outline in the left column.
-const outlineKey = "outline"
+// outlineKey is the scroll key of the outline of the spec at path in the left column.
+func outlineKey(path string) string { return "outline:" + path }
 
-// outlined is the spec the left column outlines in place of the files: the one the first editor
-// on the right shows structured; nil for none, or while the left column shows the agents.
+// outlined is the spec the left column outlines in place of the files: beside's, unless the user
+// chose the files.
 func outlined(st *ide.State, o Options, width, height int) *specView {
+	if o.Explorer {
+		return nil
+	}
+	return beside(st, o, width, height)
+}
+
+// beside is the spec the left column can outline: the one the first editor on the right shows
+// structured; nil for none, or while the left column shows the agents.
+func beside(st *ide.State, o Options, width, height int) *specView {
 	if o.Panel != Files {
 		return nil
 	}
@@ -62,7 +72,7 @@ func (v *specView) outline(o Options, ih int) (rows []outlineRow, sel, follow, t
 		}
 	}
 	follow = scrollTop(sel, len(rows), ih)
-	return rows, sel, follow, scrolled(follow, o.Scroll[outlineKey], max(0, len(rows)-ih))
+	return rows, sel, follow, scrolled(follow, o.Scroll[outlineKey(v.path)], max(0, len(rows)-ih))
 }
 
 // outlinePane draws the outline of v in the left column, w×h cells: the sections' labels in their
@@ -96,13 +106,24 @@ func outlinePane(v *specView, o Options, w, h int) []string {
 		out[i] = base.Foreground(c).Render("▌") + base.Render(" ") + base.Foreground(theme.Bright).Render(name) +
 			base.Render(pad) + base.Foreground(theme.Dim).Render(n)
 	}
-	reqs, scenarios := v.doc.counts()
-	head := count(reqs, "requirement") + " · " + count(scenarios, "scenario")
-	if ansi.StringWidth(head) > iw-3 { // the scenarios give way rather than be cut
-		head = count(reqs, "requirement")
+	reqs, _ := v.doc.counts()
+	head := count(reqs, "requirement")
+	if ansi.StringWidth(head+" · files") > iw-3 { // the switch to the files stays in sight
+		head = "outline"
 	}
-	title := " " + fgStyle.Render(head) + " "
-	return frame(w, h, theme.Border, title, out)
+	return frame(w, h, theme.Border, switchTitle(head, "files"), out)
+}
+
+// switchTitle heads the left column beside a spec: what it shows, then, dim, what a click on the
+// title switches it to.
+func switchTitle(shown, other string) string {
+	return " " + fgStyle.Render(shown) + dimStyle.Render(" · "+other) + " "
+}
+
+// SwitchAt reports whether a click at cell (x, y) of Render(st, o, width, height) falls on the
+// title of the left column while it can show a spec's outline or the files: the click switches.
+func SwitchAt(st *ide.State, o Options, width, height, x, y int) bool {
+	return y == 0 && x >= 0 && x < leftWidth(width) && height > 1 && beside(st, o, width, height) != nil
 }
 
 // SpecAt is what a click at cell (x, y) of Render(st, o, width, height) does to a spec shown
@@ -149,24 +170,28 @@ func (v *specView) hit(kind rowKind, sec, req, scen int, outline bool) (SpecHit,
 	case kind == rowSection: // they all open, unless they are all open: then they all fold
 		h.Open = false
 		for j, r := range s.reqs {
-			h.Folds = append(h.Folds, reqKey(s, r))
+			h.Folds = append(h.Folds, r.key)
 			h.Open = h.Open || !reqOpen(v.folds, s, j)
 		}
 	case kind == rowScenario:
-		r := s.reqs[req]
-		key := scenarioKey(s, r, r.scenarios[scen])
+		key := s.reqs[req].scenarios[scen].key
 		h.Folds, h.Open = []string{key}, !v.folds[key]
-	case outline:
-		h.Folds, h.Open = []string{reqKey(s, s.reqs[req])}, true
-		h.Key = specKey(v.path)
-		for i, r := range v.rows {
-			if r.kind == rowReq && r.sec == sec && r.req == req {
+	case outline: // where it is once open: opening it may put a blank row above it
+		key := s.reqs[req].key
+		h.Folds, h.Open, h.Key = []string{key}, true, specKey(v.path)
+		folds := maps.Clone(v.folds)
+		if folds == nil {
+			folds = map[string]bool{}
+		}
+		folds[key] = true
+		for i, r := range v.doc.layout(folds, v.width) {
+			if r.kind == rowReq && r.sec == sec && r.req == req && !r.blank() {
 				h.Back = -i
 				break
 			}
 		}
 	default:
-		h.Folds, h.Open = []string{reqKey(s, s.reqs[req])}, !reqOpen(v.folds, s, req)
+		h.Folds, h.Open = []string{s.reqs[req].key}, !reqOpen(v.folds, s, req)
 	}
 	return h, true
 }

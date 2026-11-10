@@ -55,7 +55,7 @@ func Scrollbars(st *ide.State, o Options, width, height int) []Scrollbar {
 		add(agentsPaneKey, left, follow, max(0, len(tree)-ih), ih)
 	} else if v := outlined(st, o, width, height); v != nil {
 		rows, _, follow, _ := v.outline(o, ih)
-		add(outlineKey, left, follow, max(0, len(rows)-ih), ih)
+		add(outlineKey(v.path), left, follow, max(0, len(rows)-ih), ih)
 	} else {
 		add(filesPane, left, scrollTop(treeSel(st, camera(st)), len(st.Tree), ih), max(0, len(st.Tree)-ih), ih)
 	}

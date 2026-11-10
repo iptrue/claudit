@@ -75,7 +75,7 @@ A session SHALL last a day.
 - TO: ` + "`### Requirement: Login`"
 
 // specOf parses text as the editor holds it.
-func specOf(text string) *spec { return parseSpec(strings.Split(text, "\n")) }
+func specOf(text string) *spec { return parseSpec(strings.Split(text, "\n"), true) }
 
 // shape is what parseSpec found, flat: a line per section, requirement, scenario and block.
 func shape(sp *spec) []string {
@@ -141,8 +141,29 @@ func TestParseSpec(t *testing.T) {
 		t.Errorf("steps of Bad password: %d", n)
 	}
 	// Line endings do not matter.
-	if crlf := parseSpec(strings.Split(strings.ReplaceAll(specText, "\n", "\r\n"), "\n")); !reflect.DeepEqual(shape(crlf), want) {
+	if crlf := parseSpec(strings.Split(strings.ReplaceAll(specText, "\n", "\r\n"), "\n"), true); !reflect.DeepEqual(shape(crlf), want) {
 		t.Errorf("CRLF:\n%s", strings.Join(shape(crlf), "\n"))
+	}
+}
+
+// A main spec's sections do nothing to its requirements, whatever their titles.
+func TestParseSpecMain(t *testing.T) {
+	sp := parseSpec(strings.Split("## Removed features\n### Requirement: A\n## ADDED Requirements", "\n"), false)
+	if sp.delta || sp.sections[0].op != "" || sp.sections[1].op != "" {
+		t.Errorf("ops %q %q", sp.sections[0].op, sp.sections[1].op)
+	}
+}
+
+// Requirements and scenarios are kept by name; a name repeated gets its count, so that each folds
+// alone.
+func TestParseSpecKeys(t *testing.T) {
+	sp := specOf("## ADDED Requirements\n### Requirement: A\n#### Scenario: S\n#### Scenario: S\n### Requirement: A\n#### Scenario: S\n## MODIFIED Requirements\n### Requirement: A")
+	a, b, c := sp.sections[0].reqs[0], sp.sections[0].reqs[1], sp.sections[1].reqs[0]
+	keys := []string{a.key, b.key, c.key, a.scenarios[0].key, a.scenarios[1].key, b.scenarios[0].key}
+	want := []string{"ADDED Requirements\nA", "ADDED Requirements\nA\n#2", "MODIFIED Requirements\nA",
+		"ADDED Requirements\nA\nS", "ADDED Requirements\nA\nS\n#2", "ADDED Requirements\nA\n#2\nS"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Errorf("keys %q", keys)
 	}
 }
 
@@ -178,6 +199,17 @@ func TestParseSpecOther(t *testing.T) {
 		}},
 		{"other headings", "## added requirements\n### Requirement: R\n### Notes\n##### Deep", []string{
 			"## ADDED|added requirements", "  ### R", "    heading |Notes", "    heading |Deep",
+		}},
+		{"table and rule", "## ADDED Requirements\n### Requirement: T\nText\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n* * *\nAfter", []string{
+			"## ADDED|ADDED Requirements", "  ### T", "    text |Text",
+			"    code || a | b |", "    code ||---|---|", "    code || 1 | 2 |", "    code |---", "    code |* * *", "    text |After",
+		}},
+		{"fences close as they open", "## ADDED Requirements\n### Requirement: F\n````md\n```\n~~~\n~~~~~\n## not a section\n````\nAfter.", []string{
+			"## ADDED|ADDED Requirements", "  ### F",
+			"    code |````md", "    code |```", "    code |~~~", "    code |~~~~~", "    code |## not a section", "    code |````", "    text |After.",
+		}},
+		{"indented", "## ADDED Requirements\n### Requirement: I\n    ## not a section\n    ```\nAfter.", []string{
+			"## ADDED|ADDED Requirements", "  ### I", "    text |## not a section ``` After.",
 		}},
 	} {
 		if got := shape(specOf(tt.text)); !reflect.DeepEqual(got, tt.want) {

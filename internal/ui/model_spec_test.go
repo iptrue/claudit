@@ -48,6 +48,15 @@ A password MUST NOT be shorter than 12 characters.
 
 ### Requirement: Guests
 **Reason**: nobody is a guest
+
+### Requirement: Captcha
+**Reason**: nobody passed it
+
+### Requirement: Hints
+**Reason**: they gave the passwords away
+
+### Requirement: Questions
+**Reason**: everyone knew the answers
 `
 
 // modelSpec is a model w×h cells that shows a spec the user opened from the explorer.
@@ -55,13 +64,15 @@ func modelSpec(t *testing.T, w, h int) (*Model, string) {
 	t.Helper()
 	m, _ := modelNew(t, false)
 	m.Update(tea.WindowSizeMsg{Width: w, Height: h})
-	path := filepath.Join(m.Sim.State().Root, "openspec", "changes", "add-login", "specs", "auth", "spec.md")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openspec", "changes", "add-login", "specs", "auth", "spec.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(modelSpecText), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	m.Sim.SetRoot(dir)
 	m.viewFile(path)
 	return m, path
 }
@@ -117,14 +128,14 @@ func TestModelSpecClick(t *testing.T) {
 func TestModelSpecOutline(t *testing.T) {
 	m, path := modelSpec(t, 100, 16)
 	ew := min(max(100/5, 18), 32)
-	if s := modelScreen(m); !strings.Contains(s, "8 requirements") || !strings.Contains(s, "MODIFIED") {
+	if s := modelScreen(m); !strings.Contains(s, "outline · files") || !strings.Contains(s, "MODIFIED") {
 		t.Fatalf("no outline:\n%s", s)
 	}
 	_, y := modelMouseAt(t, m, "▌ Passwords")
 	m.Update(tea.MouseClickMsg{X: 3, Y: y, Button: tea.MouseLeft})
 	m.Update(tea.MouseReleaseMsg{X: 3, Y: y, Button: tea.MouseLeft})
 	rows := strings.Split(modelScreen(m), "\n")
-	if !strings.Contains(strings.Join(rows[1:3], "\n"), "▾ Passwords") { // as near the top as the end of the spec lets it
+	if !strings.Contains(rows[1], "▾ Passwords") {
 		t.Fatalf("the editor did not scroll to Passwords:\n%s", strings.Join(rows, "\n"))
 	}
 	if m.scroll["spec:"+path] >= 0 {
@@ -134,6 +145,32 @@ func TestModelSpecOutline(t *testing.T) {
 	m.wheel(ew+10, 5, -1)
 	if got := m.scroll["spec:"+path]; got <= before || got > 0 {
 		t.Errorf("wheel up: %d from %d", got, before)
+	}
+}
+
+// A click on the left column's title shows the files beside the spec, and they stay until the
+// next click; the explorer opens files as before.
+func TestModelSpecSwitch(t *testing.T) {
+	m, _ := modelSpec(t, 120, 40)
+	m.View()
+	m.Update(tea.MouseClickMsg{X: 5, Y: 0, Button: tea.MouseLeft})
+	m.Update(tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft})
+	s := modelScreen(m)
+	if !m.Explorer || !strings.Contains(s, "files · outline") || !strings.Contains(s, "▸ openspec") || !strings.Contains(s, "▾ Login") {
+		t.Fatalf("no files beside the spec:\n%s", s)
+	}
+	modelMouseClick(t, m, "▸ openspec")
+	if s := modelScreen(m); !strings.Contains(s, "▾ openspec") {
+		t.Fatalf("the folder did not open:\n%s", s)
+	}
+	m.View()
+	m.Update(tea.MouseClickMsg{X: 5, Y: 0, Button: tea.MouseLeft})
+	m.Update(tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft})
+	if s := modelScreen(m); m.Explorer || !strings.Contains(s, "outline · files") && !strings.Contains(s, "requirements · files") {
+		t.Fatalf("no outline again:\n%s", s)
+	}
+	if !strings.Contains(ansi.Strip(renderHelp(120, 60)), "click title") {
+		t.Error("the help does not tell the switch")
 	}
 }
 

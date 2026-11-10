@@ -181,6 +181,20 @@ func TestSpecWhileEditing(t *testing.T) {
 	if raw(st) {
 		t.Error("an agent that typed a while ago: as written")
 	}
+	st.Agents[0].TypedAt, st.Agents[0].Focus, st.Agents[0].Term.Input = now.Add(-100*time.Millisecond), ide.Terminal, "go te"
+	if raw(st) || !strings.Contains(strings.Join(leftRows(Render(st, Options{Now: now, Busy: true}, 120, 40), 120), "\n"), "Logout") {
+		t.Error("an agent typing a command in its terminal: as written, or no outline")
+	}
+	st.Agents[0].Focus = ide.Browser
+	if raw(st) {
+		t.Error("an agent typing an address in its browser: as written")
+	}
+	st.Agents[0].Focus, st.Agents[0].File = ide.Editor, root+"/main.go"
+	if raw(st) {
+		t.Error("an agent typing in another file: as written")
+	}
+	st.Agents[0].File = specFile
+	st.Agents[0].Focus, st.Agents[0].TypedAt = ide.Editor, now.Add(-time.Second)
 	st.Tabs[2].Buf.Carets["main"].Sel = &ide.Selection{To: ide.Pos{Line: 1}}
 	if !raw(st) {
 		t.Error("an agent selecting what it replaces: structured")
@@ -217,6 +231,21 @@ func TestSpecFold(t *testing.T) {
 		}
 		o.Specs.Fold(h)
 	}
+	// Opened after a folded one, a requirement takes a blank row above it; a second click where the
+	// first was folds it back.
+	click("▾ Login")
+	x, y := specRowAt(t, st, o, "▸ Logout")
+	for i, want := range []string{"▾ Logout", "▸ Logout"} {
+		h, ok := SpecAt(st, o, 120, 40, x+2, y)
+		if !ok {
+			t.Fatalf("click %d at the same place does nothing", i+1)
+		}
+		o.Specs.Fold(h)
+		if rows := specRender(st, o); rowWith(rows, want) < 0 {
+			t.Fatalf("click %d: no %q:\n%s", i+1, want, strings.Join(rows, "\n"))
+		}
+	}
+	click("▸ Login")
 	click("▸ Logout")
 	if rows := specRender(st, o); rowWith(rows, "▾ Logout") < 0 || rowWith(rows, "▸ Logout  · 2 steps") < 0 {
 		t.Fatalf("Logout did not open:\n%s", strings.Join(rows, "\n"))
@@ -251,7 +280,7 @@ func TestSpecFold(t *testing.T) {
 			t.Errorf("a click on %q folds", s)
 		}
 	}
-	x, y := specRowAt(t, st, o, "▾ Logout")
+	x, y = specRowAt(t, st, o, "▾ Logout")
 	for _, at := range [][2]int{{119, y}, {x, 0}, {x, 39}, {x, -1}, {-1, y}} {
 		if _, ok := SpecAt(st, o, 120, 40, at[0], at[1]); ok {
 			t.Errorf("a click at %v folds", at)
@@ -269,9 +298,9 @@ func TestSpecScroll(t *testing.T) {
 	all := Specs{specFile: {}}
 	for _, s := range specOf(specText).sections {
 		for _, r := range s.reqs {
-			all[specFile][reqKey(s, r)] = true
+			all[specFile][r.key] = true
 			for _, sc := range r.scenarios {
-				all[specFile][scenarioKey(s, r, sc)] = true
+				all[specFile][sc.key] = true
 			}
 		}
 	}
@@ -340,8 +369,11 @@ func TestSpecOutline(t *testing.T) {
 	if !strings.HasSuffix(l[1], " 2") || !strings.HasSuffix(l[8], " 0") {
 		t.Errorf("counts: %q %q", l[1], l[8])
 	}
-	if top := strings.Split(ansi.Strip(left(out, 120)), "\n")[0]; !strings.Contains(top, " 4 requirements ") {
+	if top := strings.Split(ansi.Strip(left(out, 120)), "\n")[0]; !strings.Contains(top, " outline · files ") {
 		t.Errorf("title: %q", top)
+	}
+	if top := strings.Split(ansi.Strip(left(Render(st, o, 170, 40), 170)), "\n")[0]; !strings.Contains(top, " 4 requirements · files ") {
+		t.Errorf("wide title: %q", top)
 	}
 	if !strings.Contains(lineWith(left(out, 120), "Login"), sgr("48", theme.SelBg)) || strings.Contains(lineWith(left(out, 120), "Logout"), sgr("48", theme.SelBg)) {
 		t.Error("Login is not the one lit")
@@ -384,10 +416,10 @@ func TestSpecOutlineScroll(t *testing.T) {
 	}
 	st.Tabs[2].Buf.SetText(b.String())
 	o := Options{Now: now, Scroll: Scroll{}}
-	if k, n := Wheel(st, o, 120, 20, 5, 5, -3); k != outlineKey || n != -3 {
+	if k, n := Wheel(st, o, 120, 20, 5, 5, -3); k != outlineKey(specFile) || n != -3 {
 		t.Errorf("wheel: %q %d", k, n)
 	}
-	if i := slices.IndexFunc(Scrollbars(st, o, 120, 20), func(b Scrollbar) bool { return b.Key == outlineKey }); i < 0 {
+	if i := slices.IndexFunc(Scrollbars(st, o, 120, 20), func(b Scrollbar) bool { return b.Key == outlineKey(specFile) }); i < 0 {
 		t.Error("no scrollbar on the outline")
 	}
 	o.Scroll[specKey(specFile)] = -60 // further down than the outline shows from its top
@@ -395,14 +427,21 @@ func TestSpecOutlineScroll(t *testing.T) {
 		strings.Contains(l[0], "ADDED") {
 		t.Errorf("the outline did not follow:\n%s", strings.Join(l, "\n"))
 	}
-	o.Scroll[outlineKey] = -3
+	o.Scroll[outlineKey(specFile)] = -3
 	Prune(st, o, 120, 20)
-	if _, ok := o.Scroll[outlineKey]; !ok {
+	if _, ok := o.Scroll[outlineKey(specFile)]; !ok {
 		t.Error("pruned the outline's scroll")
 	}
+	other := root + "/openspec/specs/auth/login/spec.md"
+	st.Tabs = append(st.Tabs, &ide.Tab{Path: other, Title: "spec.md", Buf: ide.Buffer{Lines: st.Tabs[2].Buf.Lines}})
+	st.Agents[0].File = other
+	if l := leftRows(Render(st, o, 120, 20), 120); !strings.Contains(l[0], "ADDED") {
+		t.Errorf("another spec's outline kept the scroll:\n%s", strings.Join(l, "\n"))
+	}
+	st.Agents[0].File = specFile
 	o.Raw = true
 	Prune(st, o, 120, 20)
-	if _, ok := o.Scroll[outlineKey]; ok {
+	if _, ok := o.Scroll[outlineKey(specFile)]; ok {
 		t.Error("kept the scroll of an outline off screen")
 	}
 }
@@ -413,9 +452,9 @@ func TestSpecRenderSize(t *testing.T) {
 	open := Specs{specFile: {}}
 	for _, s := range specOf(cjk).sections {
 		for _, r := range s.reqs {
-			open[specFile][reqKey(s, r)] = true
+			open[specFile][r.key] = true
 			for _, sc := range r.scenarios {
-				open[specFile][scenarioKey(s, r, sc)] = true
+				open[specFile][sc.key] = true
 			}
 		}
 	}
@@ -488,5 +527,118 @@ func TestSpecInline(t *testing.T) {
 		if s, red := plainOf(inline(tt.in, fgStyle)); s != tt.plain || !slices.Equal(red, tt.red) {
 			t.Errorf("%q: %q red %q, want %q %q", tt.in, s, red, tt.plain, tt.red)
 		}
+	}
+}
+
+// From the outline, a requirement after a folded one lands on the top row exactly, the blank row
+// that opening it puts above it out of sight.
+func TestSpecOutlineTop(t *testing.T) {
+	st := specState()
+	o := Options{Now: now, Specs: Specs{specFile: {"ADDED Requirements\nLogin": false}}, Scroll: Scroll{}}
+	h, ok := SpecAt(st, o, 120, 16, 3, 3)
+	if !ok || h.Folds[0] != "ADDED Requirements\nLogout" {
+		t.Fatalf("outline click: %+v %v", h, ok)
+	}
+	o.Specs.Fold(h)
+	o.Scroll[h.Key] = h.Back
+	if rows := strings.Split(ansi.Strip(Render(st, o, 120, 16)), "\n"); !strings.Contains(rows[1], "▾ Logout") {
+		t.Errorf("Logout is not the top row:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+// Tables and rules show as written, row by row.
+func TestSpecTable(t *testing.T) {
+	st := specState()
+	st.Tabs[2].Buf.SetText("## Requirements\n### Requirement: T\nIt SHALL.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\nAfter.")
+	st.Tabs[2].Path = root + "/openspec/specs/auth/spec.md"
+	st.Agents[0].File = st.Tabs[2].Path
+	rows := specRender(st, Options{Now: now})
+	for i, want := range []string{"▌   | a | b |", "▌   |---|---|", "▌   | 1 | 2 |"} {
+		if j := rowWith(rows, want); j < 0 || i > 0 && rowWith(rows, "▌   | a | b |")+i != j {
+			t.Errorf("no row %q under the one before:\n%s", want, strings.Join(rows, "\n"))
+		}
+	}
+	if rowWith(rows, "▌   ---") < 0 {
+		t.Errorf("no rule:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+// The layout of a frame is the next frame's, until the text, the folds or the width change.
+func TestSpecCache(t *testing.T) {
+	st := specState()
+	o := Options{Now: now, Specs: Specs{}, SpecRows: SpecCache{}, Scroll: Scroll{}}
+	rows := specRender(st, o)
+	cached := o.SpecRows[specFile]
+	if cached == nil || rowWith(rows, "▸ Logout") < 0 {
+		t.Fatal("nothing cached")
+	}
+	if specRender(st, o); o.SpecRows[specFile] != cached || &cached.rows[0] != &o.SpecRows[specFile].rows[0] {
+		t.Error("laid out again with nothing changed")
+	}
+	o.Specs.Fold(SpecHit{Path: specFile, Folds: []string{"ADDED Requirements\nLogout"}, Open: true})
+	if rows := specRender(st, o); rowWith(rows, "▾ Logout") < 0 {
+		t.Error("a fold kept the old layout")
+	}
+	// in place, as an agent's typing changes it; another name starts folded
+	st.Tabs[2].Buf.Lines[18] = "### Requirement: Sign out"
+	if rows := specRender(st, o); rowWith(rows, "▸ Sign out") < 0 {
+		t.Errorf("an edit kept the old layout:\n%s", strings.Join(rows, "\n"))
+	}
+	if rows := strings.Split(ansi.Strip(Render(st, o, 60, 40)), "\n"); rowWith(rows, "The system SHALL let a user log in with email and password. It") >= 0 {
+		t.Error("a narrower editor kept the old width")
+	}
+	st.Agents[0].File = root + "/src/main.go"
+	Prune(st, o, 120, 40)
+	if len(o.SpecRows) != 0 {
+		t.Error("kept the layout of a spec off screen")
+	}
+}
+
+// A click on the left column's title switches it between the outline and the files, both ways;
+// with the files, the explorer is as without a spec.
+func TestSpecSwitch(t *testing.T) {
+	st := specState()
+	o := Options{Now: now, Scroll: Scroll{filesPane: 1}}
+	if !SwitchAt(st, o, 120, 40, 5, 0) || SwitchAt(st, o, 120, 40, 5, 1) || SwitchAt(st, o, 120, 40, 60, 0) {
+		t.Error("the title switches nothing, or something else does")
+	}
+	if SwitchAt(st, Options{Now: now, Panel: Agents}, 120, 40, 5, 0) || SwitchAt(st, Options{Now: now, Raw: true}, 120, 40, 5, 0) {
+		t.Error("the title switches beside the agents or a spec as written")
+	}
+	o.Scroll[outlineKey(specFile)] = -1
+	Prune(st, o, 120, 40)
+	if _, ok := o.Scroll[filesPane]; ok {
+		t.Error("kept the scroll of the files under the outline")
+	}
+	if _, ok := o.Scroll[outlineKey(specFile)]; !ok {
+		t.Error("pruned the outline's scroll")
+	}
+	if path, _ := TreeAt(st, o, 120, 40, 3, 2); path != "" {
+		t.Errorf("the outline opens %q", path)
+	}
+	o.Explorer = true
+	out := Render(st, o, 120, 40)
+	if top := strings.Split(ansi.Strip(left(out, 120)), "\n")[0]; !strings.Contains(top, " files · outline ") || !styled(out, " · outline", sgr("38", theme.Dim)) {
+		t.Errorf("title: %q", top)
+	}
+	if l := leftRows(out, 120); !strings.Contains(strings.Join(l, "\n"), "▾ src") || strings.Contains(strings.Join(l, "\n"), "Logout") {
+		t.Errorf("not the files:\n%s", strings.Join(l, "\n"))
+	}
+	if path, dir := TreeAt(st, o, 120, 40, 3, 2); path != root+"/src" || !dir {
+		t.Errorf("the files open %q", path)
+	}
+	if _, ok := SpecAt(st, o, 120, 40, 3, 2); ok || !SwitchAt(st, o, 120, 40, 5, 0) {
+		t.Error("the files fold the spec, or do not switch back")
+	}
+	if rows := specRender(st, o); rowWith(rows, "▾ Login") < 0 {
+		t.Error("the spec is no longer structured")
+	}
+	o.Scroll[filesPane] = 1
+	Prune(st, o, 120, 40)
+	if _, ok := o.Scroll[outlineKey(specFile)]; ok {
+		t.Error("kept the scroll of the outline under the files")
+	}
+	if _, ok := o.Scroll[filesPane]; !ok {
+		t.Error("pruned the scroll of the files")
 	}
 }

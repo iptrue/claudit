@@ -184,15 +184,20 @@ func (m *Model) clickIDE(key string) tea.Cmd {
 	return nil
 }
 
+// clickSwitch acts on a press on the title of the left column beside a spec: its release, unless
+// the press starts a selection, switches the column between the spec's outline and the files.
+func (m *Model) clickSwitch() tea.Cmd {
+	m.PanelFocus = false
+	m.onRelease = func() { m.Explorer = !m.Explorer }
+	return nil
+}
+
 // clickSpec acts on a press on a row of a spec shown structured: its release, unless the press
 // starts a selection, opens or folds what the row heads and scrolls the editor as the row asks.
 // The keys go back to the prompt.
 func (m *Model) clickSpec(h ideview.SpecHit) tea.Cmd {
 	m.PanelFocus = false
 	m.onRelease = func() {
-		if m.specs == nil {
-			m.specs = ideview.Specs{}
-		}
 		m.specs.Fold(h)
 		if h.Key != "" {
 			m.scrollIDE(h.Key, h.Back)
