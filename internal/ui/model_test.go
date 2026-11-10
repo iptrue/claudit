@@ -822,6 +822,32 @@ func TestModelRetryAndCompaction(t *testing.T) {
 	}
 }
 
+// A compaction says so in the chat, and the context shows what the summary holds before main's
+// next call tells it: /compact asks no call of its own.
+func TestModelCompacted(t *testing.T) {
+	m, _ := modelNew(t, false)
+	modelEvents(m, protocol.Init{SessionID: "one", Model: "claude-opus-5-5"}, protocol.Context{Model: "claude-opus-5-5", Tokens: 165745})
+	m.windows = map[string]int{"claude-opus-5-5": 1000000} // as a turn's result tells it
+	modelEvents(m, protocol.Compacted{Trigger: "manual", Before: 165745, After: 6555})
+	if m.context.Tokens != 6555 {
+		t.Errorf("context after the compaction: %d tokens", m.context.Tokens)
+	}
+	if got := m.Status.Context; got < 0.0065 || got > 0.0066 {
+		t.Errorf("status context %v", got)
+	}
+	if n := len(m.Chat); n == 0 || m.Chat[n-1].Text != "Conversation compacted · 166k → 7k tokens" {
+		t.Errorf("chat %#v", m.Chat)
+	}
+	// One that tells no sizes still says so, and leaves the count to the next call.
+	modelEvents(m, protocol.Compacted{Trigger: "auto"})
+	if m.context.Tokens != 6555 || m.Chat[len(m.Chat)-1].Text != "Conversation compacted automatically" {
+		t.Errorf("without sizes: %d tokens, chat %q", m.context.Tokens, m.Chat[len(m.Chat)-1].Text)
+	}
+	if kTokens(999) != "999" || kTokens(1499) != "1k" || kTokens(1500) != "2k" {
+		t.Errorf("kTokens: %q %q %q", kTokens(999), kTokens(1499), kTokens(1500))
+	}
+}
+
 // The effort shows beside the model: as claude's settings tell it, at the start and after a model
 // switch, as a turn tells it when it does (claude 2.1.316 does not), as /effort sets it; "auto",
 // the model's own, shows none.
