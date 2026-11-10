@@ -160,10 +160,15 @@ func TestParseSpecKeys(t *testing.T) {
 	sp := specOf("## ADDED Requirements\n### Requirement: A\n#### Scenario: S\n#### Scenario: S\n### Requirement: A\n#### Scenario: S\n## MODIFIED Requirements\n### Requirement: A")
 	a, b, c := sp.sections[0].reqs[0], sp.sections[0].reqs[1], sp.sections[1].reqs[0]
 	keys := []string{a.key, b.key, c.key, a.scenarios[0].key, a.scenarios[1].key, b.scenarios[0].key}
-	want := []string{"ADDED Requirements\nA", "ADDED Requirements\nA\n#2", "MODIFIED Requirements\nA",
-		"ADDED Requirements\nA\nS", "ADDED Requirements\nA\nS\n#2", "ADDED Requirements\nA\n#2\nS"}
+	want := []string{"ADDED Requirements\nA", "ADDED Requirements\nA\x00#2", "MODIFIED Requirements\nA",
+		"ADDED Requirements\nA\nS", "ADDED Requirements\nA\nS\x00#2", "ADDED Requirements\nA\x00#2\nS"}
 	if !reflect.DeepEqual(keys, want) {
 		t.Errorf("keys %q", keys)
+	}
+	// a scenario named as a count folds apart from the requirement repeated
+	sp = specOf("## ADDED Requirements\n### Requirement: B\n#### Scenario: #2\n### Requirement: B")
+	if r := sp.sections[0].reqs; r[0].scenarios[0].key == r[1].key {
+		t.Errorf("scenario #2 and the second B share the key %q", r[1].key)
 	}
 }
 
@@ -207,6 +212,10 @@ func TestParseSpecOther(t *testing.T) {
 		{"fences close as they open", "## ADDED Requirements\n### Requirement: F\n````md\n```\n~~~\n~~~~~\n## not a section\n````\nAfter.", []string{
 			"## ADDED|ADDED Requirements", "  ### F",
 			"    code |````md", "    code |```", "    code |~~~", "    code |~~~~~", "    code |## not a section", "    code |````", "    text |After.",
+		}},
+		{"indented fence inside", "## ADDED Requirements\n### Requirement: J\n```\n    ```\n## not a section\n```\nAfter.", []string{
+			"## ADDED|ADDED Requirements", "  ### J",
+			"    code |```", "    code |    ```", "    code |## not a section", "    code |```", "    text |After.",
 		}},
 		{"indented", "## ADDED Requirements\n### Requirement: I\n    ## not a section\n    ```\nAfter.", []string{
 			"## ADDED|ADDED Requirements", "  ### I", "    text |## not a section ``` After.",

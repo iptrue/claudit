@@ -107,17 +107,19 @@ func outlinePane(v *specView, o Options, w, h int) []string {
 			base.Render(pad) + base.Foreground(theme.Dim).Render(n)
 	}
 	reqs, _ := v.doc.counts()
-	head := count(reqs, "requirement")
-	if ansi.StringWidth(head+" · files") > iw-3 { // the switch to the files stays in sight
-		head = "outline"
-	}
-	return frame(w, h, theme.Border, switchTitle(head, "files"), out)
+	return frame(w, h, theme.Border, switchTitle(iw-1, "files", count(reqs, "requirement"), "outline"), out)
 }
 
-// switchTitle heads the left column beside a spec: what it shows, then, dim, what a click on the
-// title switches it to.
-func switchTitle(shown, other string) string {
-	return " " + fgStyle.Render(shown) + dimStyle.Render(" · "+other) + " "
+// switchTitle heads the left column beside a spec in room cells: the first of shown that fits,
+// then, dim, what a click on the title switches it to; that alone when none fits, so that the
+// switch stays in sight.
+func switchTitle(room int, other string, shown ...string) string {
+	for _, s := range shown {
+		if ansi.StringWidth(" "+s+" · "+other+" ") <= room {
+			return " " + fgStyle.Render(s) + dimStyle.Render(" · "+other) + " "
+		}
+	}
+	return " " + dimStyle.Render("· "+other) + " "
 }
 
 // SwitchAt reports whether a click at cell (x, y) of Render(st, o, width, height) falls on the

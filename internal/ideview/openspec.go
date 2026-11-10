@@ -113,8 +113,8 @@ func parseSpec(lines []string, delta bool) *spec {
 	}
 	seen := map[string]int{}
 	key := func(k string) string { // a name repeated in its section or requirement gets its count
-		if seen[k]++; seen[k] > 1 {
-			return k + "\n#" + strconv.Itoa(seen[k])
+		if seen[k]++; seen[k] > 1 { // after a NUL, which no name has
+			return k + "\x00#" + strconv.Itoa(seen[k])
 		}
 		return k
 	}
@@ -127,7 +127,7 @@ func parseSpec(lines []string, delta bool) *spec {
 			switch {
 			case fence == "" && m != "" && !indented:
 				fence = m
-			case fence != "" && m != "" && trimmed == m && m[0] == fence[0] && len(m) >= len(fence):
+			case fence != "" && m != "" && !indented && trimmed == m && m[0] == fence[0] && len(m) >= len(fence):
 				fence = ""
 			}
 			add(block{kind: blockCode, text: line})

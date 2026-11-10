@@ -225,7 +225,7 @@ func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int, outline bo
 	}
 	title := " " + fgStyle.Render(clip(filepath.Base(st.Root), iw, "")) + " "
 	if outline {
-		title = switchTitle("files", "outline")
+		title = switchTitle(iw-1, "outline", "files")
 	}
 	return frame(w, h, theme.Border, title, rows)
 }

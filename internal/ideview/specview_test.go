@@ -427,7 +427,11 @@ func TestSpecOutlineScroll(t *testing.T) {
 		strings.Contains(l[0], "ADDED") {
 		t.Errorf("the outline did not follow:\n%s", strings.Join(l, "\n"))
 	}
+	delete(o.Scroll, specKey(specFile))
 	o.Scroll[outlineKey(specFile)] = -3
+	if l := leftRows(Render(st, o, 120, 20), 120); strings.Contains(l[0], "ADDED") {
+		t.Errorf("the outline did not scroll:\n%s", strings.Join(l, "\n"))
+	}
 	Prune(st, o, 120, 20)
 	if _, ok := o.Scroll[outlineKey(specFile)]; !ok {
 		t.Error("pruned the outline's scroll")
@@ -632,6 +636,13 @@ func TestSpecSwitch(t *testing.T) {
 	}
 	if rows := specRender(st, o); rowWith(rows, "▾ Login") < 0 {
 		t.Error("the spec is no longer structured")
+	}
+	for _, explorer := range []bool{false, true} { // 80 columns: the left column is 18 wide
+		o := Options{Now: now, Explorer: explorer}
+		top := strings.Split(ansi.Strip(left(Render(st, o, 80, 40), 80)), "\n")[0]
+		if want := map[bool]string{false: " · files ", true: " · outline "}[explorer]; !strings.Contains(top, want) {
+			t.Errorf("80 columns, the files %v: title %q, no %q", explorer, top, want)
+		}
 	}
 	o.Scroll[filesPane] = 1
 	Prune(st, o, 120, 40)
