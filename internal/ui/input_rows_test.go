@@ -35,11 +35,38 @@ func TestLayoutInput(t *testing.T) {
 		{"a\tb", 3, 10, "a b", 0, 3},
 		{"a\u200db", 1, 10, "ab", 0, 1}, // a zero-width joiner is not drawn
 		{"x", 0, 0, "x", 0, 0},
+		// A mark that joins the letter before it takes no cell of its own.
+		{"e\u0301", 2, 10, "e\u0301", 0, 1},
+		{"วันที่", 6, 10, "วันที่", 0, 3},
+		{"e\u0301e\u0301e\u0301", 6, 2, "e\u0301e\u0301|e\u0301", 1, 1},
 	} {
 		rows, row, col := layoutInput([]rune(c.text), c.cursor, c.avail)
 		if got := strings.Join(rowTexts(rows), "|"); got != c.rows || row != c.row || col != c.col {
 			t.Errorf("%q at %d in %d: %q row %d col %d, want %q row %d col %d", c.text, c.cursor, c.avail, got, row, col, c.rows, c.row, c.col)
 		}
+	}
+}
+
+// Up and down land on the place of a column: past the marks of a letter, not between them.
+func TestInputIndexAt(t *testing.T) {
+	for _, c := range []struct {
+		text string
+		col  int
+		want int
+	}{
+		{"e\u0301x", 1, 2},
+		{"วันที่x", 3, 6},
+		{"b\u200dcd", 2, 3},
+		{"abc", 0, 0},
+		{"abc", 9, 3},
+	} {
+		runes := []rune(c.text)
+		if got := inputIndexAt(runes, inputRow{to: len(runes)}, false, c.col); got != c.want {
+			t.Errorf("%q col %d: %d, want %d", c.text, c.col, got, c.want)
+		}
+	}
+	if inputMaxRows(200) != 10 || inputMaxRows(20) != 5 || inputMaxRows(3) != 1 {
+		t.Errorf("rows at most: %d %d %d", inputMaxRows(200), inputMaxRows(20), inputMaxRows(3))
 	}
 }
 
@@ -50,6 +77,10 @@ func TestRenderInputRows(t *testing.T) {
 			lines[i] = strings.TrimRight(ansi.Strip(l), " ")
 		}
 		return lines
+	}
+	// The cursor stands where a one-row prompt puts it: past the gutter and the cells drawn.
+	if _, x, y := renderInputRows(&Input{Text: []rune("วันที่"), Cursor: 6}, 40, "", false, 5); x != 2+3 || y != 0 {
+		t.Errorf("marks: x=%d y=%d", x, y)
 	}
 	in := &Input{Text: []rune("abcdefghij"), Cursor: 10}
 	lines, x, y := renderInputRows(in, 6, "", false, 5) // 4 cells a row past the gutter

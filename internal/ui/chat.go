@@ -329,7 +329,9 @@ func layoutInput(runes []rune, cursor, avail int) (rows []inputRow, curRow, curC
 		if unicode.IsControl(r) {
 			r = ' '
 		}
-		rw := max(1, ansi.StringWidth(string(r)))
+		// Measured with the row, as it is drawn: a mark that joins the letter before it takes
+		// no cell of its own.
+		rw := max(0, ansi.StringWidth(string(row.text)+string(r))-w)
 		if w+rw > avail && len(row.text) > 0 {
 			row.to = i
 			rows, row, w = append(rows, row), inputRow{from: i}, 0
@@ -355,14 +357,22 @@ func layoutInput(runes []rune, cursor, avail int) (rows []inputRow, curRow, curC
 // inputIndexAt is the index in runes of column col of row, or of its last place: before the
 // first rune of the next row when this one wraps into it.
 func inputIndexAt(runes []rune, row inputRow, wraps bool, col int) int {
+	var drawn []rune
 	w := 0
 	for i := row.from; i < row.to; i++ {
-		if w >= col {
+		r := runes[i]
+		if ideview.Undrawn(r) {
+			continue
+		}
+		if unicode.IsControl(r) {
+			r = ' '
+		}
+		// A rune that takes no cell joins the one before it: the place is past it.
+		nw := ansi.StringWidth(string(append(drawn, r)))
+		if nw > w && w >= col {
 			return i
 		}
-		if !ideview.Undrawn(runes[i]) {
-			w += max(1, ansi.StringWidth(string(runes[i])))
-		}
+		drawn, w = append(drawn, r), nw
 	}
 	if wraps && row.to > row.from {
 		return row.to - 1
