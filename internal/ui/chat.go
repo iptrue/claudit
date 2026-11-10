@@ -173,6 +173,9 @@ func drawEntry(e ChatEntry, w int) []string {
 		}
 		return lines
 	case CommandEntry:
+		if e.Bang != "" {
+			return drawBang(e, w)
+		}
 		lines := drawDense(drawCommand(e.Text, w-2))
 		for i, l := range lines {
 			gutter := "  "
@@ -189,8 +192,34 @@ func drawEntry(e ChatEntry, w int) []string {
 	return nil
 }
 
+// drawBang renders a ! command as typed after a "!", then what it printed under a "⎿", as Claude
+// Code shows them; "running…" until it ends.
+func drawBang(e ChatEntry, w int) []string {
+	lines := drawDense(drawWrap(e.Bang, w-2))
+	for i, l := range lines {
+		prefix := "  "
+		if i == 0 {
+			prefix = "! "
+		}
+		lines[i] = styleYou.Render(prefix + l)
+	}
+	out := drawDense(drawWrap(e.Text, w-4))
+	st := styleFg
+	if e.Text == "" {
+		out, st = []string{"running…"}, styleDim
+	}
+	for i, l := range out {
+		gutter := "    "
+		if i == 0 {
+			gutter = "  ⎿ "
+		}
+		lines = append(lines, styleDim.Render(gutter)+st.Render(l))
+	}
+	return lines
+}
+
 func chatGoal(e ChatEntry) (string, bool) {
-	if e.Kind != CommandEntry || !strings.Contains(e.Text, "Goal set:") {
+	if e.Kind != CommandEntry || e.Bang != "" || !strings.Contains(e.Text, "Goal set:") {
 		return "", false
 	}
 	text, ok := strings.CutPrefix(strings.TrimSpace(drawClean(e.Text)), "Goal set:")

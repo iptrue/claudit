@@ -125,6 +125,7 @@ func (m *Model) ctrlC() tea.Cmd {
 	switch {
 	case m.Popup == nil && (len(m.Input.Text) > 0 || m.queueAt >= 0):
 		m.clearPrompt()
+	case m.Popup == nil && m.bangStop():
 	case m.Popup == nil && m.canInterrupt():
 		m.interrupt()
 	case m.Status.State == "exited":
