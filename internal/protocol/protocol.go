@@ -445,13 +445,14 @@ func parseSystem(line []byte) []Event {
 
 func parseCompactBoundary(line []byte) []Event {
 	var m struct {
-		Meta struct {
+		Parent string `json:"parent_tool_use_id"`
+		Meta   struct {
 			Trigger string `json:"trigger"`
 			Pre     int    `json:"pre_tokens"`
 			Post    int    `json:"post_tokens"`
 		} `json:"compact_metadata"`
 	}
-	if json.Unmarshal(line, &m) != nil {
+	if json.Unmarshal(line, &m) != nil || m.Parent != "" { // a subagent's context is not main's
 		return nil
 	}
 	return []Event{Compacted{Trigger: m.Meta.Trigger, Before: m.Meta.Pre, After: m.Meta.Post}}

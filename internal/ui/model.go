@@ -442,8 +442,10 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		// No call of main tells the context until the next turn: the summary is what it holds now.
 		if ev.After > 0 {
 			m.context.Tokens = ev.After
+			m.context.Model = cmp.Or(m.context.Model, m.Status.Model) // a /compact before any call
 		}
-		m.local(compactedText(ev))
+		// After what was said before it, as a fallback: the text before the compaction is done.
+		m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, At: now, Text: compactedText(ev)})
 	case protocol.ModelFallback:
 		m.Status.Model = ev.To // until the next turn's Init names the model again
 		m.Sim.FindAgent("main").Model = ev.To

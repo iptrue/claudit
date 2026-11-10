@@ -843,6 +843,20 @@ func TestModelCompacted(t *testing.T) {
 	if m.context.Tokens != 6555 || m.Chat[len(m.Chat)-1].Text != "Conversation compacted automatically" {
 		t.Errorf("without sizes: %d tokens, chat %q", m.context.Tokens, m.Chat[len(m.Chat)-1].Text)
 	}
+	// Asked as a turn goes on, or between its calls, it follows what was said before it.
+	modelEvents(m, protocol.Thinking{}, protocol.TextStart{}, protocol.TextDelta{Text: "Reading the files first."},
+		protocol.Compacted{Trigger: "auto", Before: 160000, After: 9000})
+	if n := len(m.Chat); m.Chat[n-2].Text != "Reading the files first." || m.Chat[n-1].Text != "Conversation compacted automatically · 160k → 9k tokens" {
+		t.Errorf("in a turn: chat %#v", m.Chat[n-2:])
+	}
+	// A /compact before any call of this process: the context shows on the model claude runs.
+	m2, _ := modelNew(t, false)
+	modelEvents(m2, protocol.Init{SessionID: "two", Model: "claude-opus-5-5"})
+	m2.windows = map[string]int{"claude-opus-5-5": 1000000}
+	modelEvents(m2, protocol.Compacted{Trigger: "manual", Before: 165745, After: 6555})
+	if m2.Status.Context == 0 {
+		t.Errorf("before any call: status context %v, model %q", m2.Status.Context, m2.Status.Model)
+	}
 	if kTokens(999) != "999" || kTokens(1499) != "1k" || kTokens(1500) != "2k" {
 		t.Errorf("kTokens: %q %q %q", kTokens(999), kTokens(1499), kTokens(1500))
 	}
