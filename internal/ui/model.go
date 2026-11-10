@@ -530,7 +530,9 @@ func (m *Model) handleEvent(ev protocol.Event) {
 		m.limits = ev
 	case protocol.Context:
 		m.context = ev
-		m.cacheAt = now.Add(-ev.TTFT)
+		if ev.Cached { // with caching off, or not served, no call keeps a cache alive
+			m.cacheAt = now.Add(-ev.TTFT)
+		}
 		if ev.CacheTTL > 0 {
 			m.cacheTTL = ev.CacheTTL
 		}

@@ -111,6 +111,7 @@ type Context struct {
 	Tokens   int
 	TTFT     time.Duration
 	CacheTTL time.Duration
+	Cached   bool // the call read or wrote the prompt cache: with none, there is no cache to time
 }
 
 // CLIReply is a reply of the CLI itself rather than the model: a slash command's output or an
@@ -655,7 +656,7 @@ func parseStreamEvent(line []byte) []Event {
 			ttl = time.Hour
 		}
 		return []Event{Context{Model: e.Message.Model, Tokens: u.Input + u.CacheRead + u.CacheCreation,
-			TTFT: time.Duration(m.TTFT) * time.Millisecond, CacheTTL: ttl}}
+			TTFT: time.Duration(m.TTFT) * time.Millisecond, CacheTTL: ttl, Cached: u.CacheRead+u.CacheCreation > 0}}
 	case e.Type == "content_block_start" && e.ContentBlock.Type == "fallback" && e.ContentBlock.To.Model != "":
 		return []Event{ServingModel{Model: e.ContentBlock.To.Model}}
 	case e.Type == "message_delta":

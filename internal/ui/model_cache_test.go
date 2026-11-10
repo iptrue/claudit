@@ -23,12 +23,16 @@ func TestModelCache(t *testing.T) {
 	if _, ttl := modelCacheAt(m, 0); ttl != 0 {
 		t.Fatalf("shown before any call: %s", ttl)
 	}
-	modelEvents(m, protocol.Context{Model: "m", Tokens: 10, TTFT: 2 * time.Second}) // no cache writes: the default
+	modelEvents(m, protocol.Context{Model: "m", Tokens: 10}) // no cache read or written: none to time
+	if _, ttl := modelCacheAt(m, 0); ttl != 0 {
+		t.Fatalf("shown without a cache: %s", ttl)
+	}
+	modelEvents(m, protocol.Context{Model: "m", Tokens: 10, TTFT: 2 * time.Second, Cached: true}) // no cache writes: the default
 	if left, ttl := modelCacheAt(m, time.Minute); ttl != 5*time.Minute || left != 5*time.Minute-62*time.Second {
 		t.Fatalf("default: %s of %s", left, ttl)
 	}
-	modelEvents(m, protocol.Context{Model: "m", Tokens: 10, CacheTTL: time.Hour})
-	modelEvents(m, protocol.Context{Model: "m", Tokens: 10}) // a call that wrote nothing keeps the TTL told
+	modelEvents(m, protocol.Context{Model: "m", Tokens: 10, CacheTTL: time.Hour, Cached: true})
+	modelEvents(m, protocol.Context{Model: "m", Tokens: 10, Cached: true}) // a call that wrote nothing keeps the TTL told
 	if left, ttl := modelCacheAt(m, 10*time.Minute); ttl != time.Hour || left != 50*time.Minute {
 		t.Fatalf("an hour: %s of %s", left, ttl)
 	}
@@ -44,7 +48,7 @@ func TestModelCache(t *testing.T) {
 // Another model, or another conversation resumed, has no cache of what main says: no timer until its first call.
 func TestModelCacheOtherModelOrConversation(t *testing.T) {
 	m, _ := modelResumeNew(t)
-	modelEvents(m, protocol.Context{Model: "m", Tokens: 10})
+	modelEvents(m, protocol.Context{Model: "m", Tokens: 10, Cached: true})
 	modelEvents(m, protocol.ModelChanged{Model: "m"}) // the same model: its cache lives on
 	if _, ttl := modelCacheAt(m, time.Minute); ttl == 0 {
 		t.Fatalf("the same model forgets the cache")
@@ -53,7 +57,7 @@ func TestModelCacheOtherModelOrConversation(t *testing.T) {
 	if _, ttl := modelCacheAt(m, time.Minute); ttl != 0 {
 		t.Fatalf("after /model: %s", ttl)
 	}
-	modelEvents(m, protocol.Context{Model: "n", Tokens: 10})
+	modelEvents(m, protocol.Context{Model: "n", Tokens: 10, Cached: true})
 	if _, ttl := modelCacheAt(m, time.Minute); ttl == 0 {
 		t.Fatalf("the new model's call starts no timer")
 	}
