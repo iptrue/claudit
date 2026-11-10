@@ -88,6 +88,7 @@ type Model struct {
 	history      []history.Entry    // prompts sent, oldest first: Claude Code's of the project, then this session's
 	historyFile  string             // where prompts sent are added for Claude Code too; "" for nowhere
 	historyDir   string             // the project the history file names them by
+	historyOld   int                // how many of history are earlier sessions': their pictures are not in attached
 	histAt       int                // the history entry in the prompt while browsing it; len(history) when not
 	histDraft    Input              // the prompt as typed before browsing the history
 	interrupting bool               // an Interrupt was sent: the error Result it brings ends the turn as asked
@@ -966,10 +967,10 @@ func (m *Model) chatEntries() []ChatEntry {
 }
 
 // remember adds a prompt to the history, with the texts its placeholders stand for, unless it
-// repeats the last one; Claude Code's history file gets it too.
+// repeats the last one, pasted texts and all; Claude Code's history file gets it too.
 func (m *Model) remember(text string) {
-	if n := len(m.history); n == 0 || m.history[n-1].Text != text {
-		e := history.Entry{Text: text, Pasted: m.pastedIn(text)}
+	e := history.Entry{Text: text, Pasted: m.pastedIn(text)}
+	if n := len(m.history); n == 0 || m.history[n-1].Text != text || !maps.Equal(m.history[n-1].Pasted, e.Pasted) {
 		m.history = append(m.history, e)
 		if m.historyFile != "" && !m.Status.Replay {
 			_ = history.Append(m.historyFile, m.historyDir, m.session, e, m.clock()) // the history is a convenience: a failed write costs a recall

@@ -42,6 +42,7 @@ var (
 type attachment struct {
 	text  string
 	image *protocol.Image
+	lost  bool // an earlier session's, which the history did not keep: the placeholder goes as it is
 }
 
 // imagesMsg brings pictures read off the UI's way, for the prompt.
@@ -73,7 +74,7 @@ func (m *Model) message(text string) protocol.UserMessage {
 	msg.Text = placeholderRe.ReplaceAllStringFunc(text, func(p string) string {
 		a, ok := m.attached[p]
 		switch {
-		case !ok: // typed, or from a resumed conversation
+		case !ok || a.lost: // typed, from a resumed conversation, or lost
 			return p
 		case a.image != nil:
 			msg.Images = append(msg.Images, *a.image)
@@ -228,6 +229,7 @@ func (m *Model) UseHistory(file, dir string) {
 	if entries, err := history.Load(file, dir, history.Limit); err == nil {
 		m.history = entries
 	}
+	m.historyOld = len(m.history)
 	m.histAt = len(m.history)
 }
 
@@ -237,7 +239,7 @@ func (m *Model) pastedIn(text string) map[int]string {
 	for _, p := range placeholderRe.FindAllString(text, -1) {
 		a, ok := m.attached[p]
 		n, isText := pastedNumber(p)
-		if !ok || a.image != nil || !isText {
+		if !ok || a.image != nil || a.lost || !isText {
 			continue
 		}
 		if out == nil {
@@ -249,19 +251,34 @@ func (m *Model) pastedIn(text string) map[int]string {
 }
 
 // recalled is a history entry for the prompt: a placeholder whose text is not the one this
-// session has under it, as one from an earlier session, stands for its text anew.
-func (m *Model) recalled(e history.Entry) string {
+// session has under it, as one from an earlier session, stands for its text anew. A placeholder of
+// an earlier session whose text or picture the history did not keep gets a number of its own that
+// stands for nothing, so it does not send what this session attached under its number.
+func (m *Model) recalled(e history.Entry, earlier bool) string {
 	return placeholderRe.ReplaceAllStringFunc(e.Text, func(p string) string {
 		n, isText := pastedNumber(p)
 		text, ok := e.Pasted[n]
-		if !isText || !ok {
-			return p
+		switch {
+		case isText && ok:
+			if a, have := m.attached[p]; have && a.image == nil && a.text == text {
+				return p
+			}
+			return m.attach(attachment{text: text})
+		case earlier:
+			return m.lose(p)
 		}
-		if a, have := m.attached[p]; have && a.image == nil && a.text == text {
-			return p
-		}
-		return m.attach(attachment{text: text})
+		return p
 	})
+}
+
+// lose is placeholder p under a number of its own, standing for nothing: what p stood for in an
+// earlier session is lost.
+func (m *Model) lose(p string) string {
+	i := strings.Index(p, "#") + 1
+	j := i + strings.IndexFunc(p[i:], func(r rune) bool { return r < '0' || r > '9' })
+	lost := p[:i] + strconv.Itoa(len(m.attached)+1) + p[j:]
+	m.attached[lost] = attachment{lost: true}
+	return lost
 }
 
 // pastedNumber is the number of a "[Pasted text #N …]" placeholder.

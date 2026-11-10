@@ -122,16 +122,65 @@ func TestModelHistoryPlaceholders(t *testing.T) {
 func TestModelHistorySamePlaceholder(t *testing.T) {
 	m, _ := modelLocalNew(t)
 	m.attached["[Pasted text #1 +1 lines]"] = attachment{text: "mine\ntoo"}
-	got := m.recalled(history.Entry{Text: "see [Pasted text #1 +1 lines]", Pasted: map[int]string{1: "theirs\nas well"}})
+	got := m.recalled(history.Entry{Text: "see [Pasted text #1 +1 lines]", Pasted: map[int]string{1: "theirs\nas well"}}, true)
 	if got != "see [Pasted text #2 +1 lines]" || m.attached["[Pasted text #2 +1 lines]"].text != "theirs\nas well" {
 		t.Fatalf("%q %+v", got, m.attached)
 	}
 }
 
-// A picture of an earlier prompt, or a text the history lost, stays a placeholder.
+// A picture of an earlier session's prompt, or a text the history lost, stays a placeholder, under
+// a number of its own: what this session attached under its number does not go with it.
 func TestModelHistoryLost(t *testing.T) {
+	m, sent := modelLocalNew(t)
+	m.attach(attachment{text: "mine\ntoo"})
+	m.attach(attachment{image: &protocol.Image{Media: "image/png", Data: []byte{0}}})
+	got := m.recalled(history.Entry{Text: "see [Image #2] [Pasted text #1 +1 lines]"}, true)
+	if got != "see [Image #3] [Pasted text #4 +1 lines]" {
+		t.Fatalf("%q", got)
+	}
+	modelLocalSay(m, got)
+	if msg := (*sent)[0].(protocol.UserMessage); msg.Text != "See [Image #3] [Pasted text #4 +1 lines]" || len(msg.Images) != 0 {
+		t.Fatalf("sent %+v", msg)
+	}
+	if e := m.history[len(m.history)-1]; e.Pasted != nil {
+		t.Errorf("a lost placeholder kept: %+v", e)
+	}
+}
+
+// A picture of this session's prompt is the one it had.
+func TestModelHistoryOwnPicture(t *testing.T) {
+	m, sent := modelLocalNew(t)
+	p := m.attach(attachment{image: &protocol.Image{Media: "image/png", Data: []byte{0}}})
+	got := m.recalled(history.Entry{Text: "see " + p}, false)
+	modelLocalSay(m, got)
+	if msg := (*sent)[0].(protocol.UserMessage); got != "see [Image #1]" || len(msg.Images) != 1 {
+		t.Fatalf("%q %+v", got, msg)
+	}
+}
+
+// A prompt that repeats the last one with other pasted texts is a prompt of its own; with the same, once.
+func TestModelHistoryRepeatPasted(t *testing.T) {
 	m, _ := modelLocalNew(t)
-	if got := m.recalled(history.Entry{Text: "see [Image #4] [Pasted text #2]"}); got != "see [Image #4] [Pasted text #2]" {
+	m.history = []history.Entry{{Text: "see [Pasted text #1 +3 lines]", Pasted: map[int]string{1: "old\n\n\n"}}}
+	m.attached["[Pasted text #1 +3 lines]"] = attachment{text: "new\n\n\n"}
+	m.remember("see [Pasted text #1 +3 lines]")
+	m.remember("see [Pasted text #1 +3 lines]")
+	if len(m.history) != 2 || m.history[1].Pasted[1] != "new\n\n\n" {
+		t.Fatalf("%+v", m.history)
+	}
+}
+
+// ↑ to an earlier session's prompt with a picture does not bring this session's picture of its number.
+func TestModelHistoryRecallLost(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "history.jsonl")
+	if err := os.WriteFile(file, []byte(`{"display":"see [Image #1]","pastedContents":{},"timestamp":1,"project":"/p"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := modelLocalNew(t)
+	m.UseHistory(file, "/p")
+	m.attach(attachment{image: &protocol.Image{Media: "image/png", Data: []byte{0}}})
+	m.Update(inputKey("up"))
+	if got := string(m.Input.Text); got != "see [Image #2]" {
 		t.Fatalf("%q", got)
 	}
 }

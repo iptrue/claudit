@@ -45,6 +45,19 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// A repeat with other pasted texts, as after a restart numbers them anew, is a prompt of its own.
+func TestLoadRepeatPasted(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "history.jsonl")
+	write(t, file,
+		`{"display":"see [Pasted text #1]","pastedContents":{"1":{"id":1,"type":"text","content":"old"}},"timestamp":1,"project":"/p"}`,
+		`{"display":"see [Pasted text #1]","pastedContents":{"1":{"id":1,"type":"text","content":"new"}},"timestamp":2,"project":"/p"}`,
+		`{"display":"see [Pasted text #1]","pastedContents":{"1":{"id":1,"type":"text","content":"new"}},"timestamp":3,"project":"/p"}`)
+	got, err := Load(file, "/p", 10)
+	if err != nil || len(got) != 2 || got[0].Pasted[1] != "old" || got[1].Pasted[1] != "new" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
 // Pasted texts come from the line, or from the paste cache by their hash; one the cache lost,
 // a picture, or a hash that is a path, are left out.
 func TestLoadPasted(t *testing.T) {

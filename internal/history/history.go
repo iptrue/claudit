@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,7 +62,7 @@ func Project(dir string) string {
 }
 
 // Load returns the last limit prompts typed in project, oldest first, a prompt repeated right
-// after itself once. A missing file is an empty history; lines it cannot read are skipped.
+// after itself, with the same pasted texts, once. A missing file is an empty history; lines it cannot read are skipped.
 func Load(file, project string, limit int) ([]Entry, error) {
 	f, err := os.Open(file)
 	if errors.Is(err, os.ErrNotExist) {
@@ -77,7 +78,7 @@ func Load(file, project string, limit int) ([]Entry, error) {
 		b, err := r.ReadBytes('\n')
 		var l line
 		if len(b) > 0 && json.Unmarshal(b, &l) == nil && l.Project == project && l.Display != "" {
-			if n := len(lines); n == 0 || lines[n-1].Display != l.Display {
+			if n := len(lines); n == 0 || lines[n-1].Display != l.Display || !maps.Equal(lines[n-1].Pasted, l.Pasted) {
 				lines = append(lines, l)
 			}
 		}
