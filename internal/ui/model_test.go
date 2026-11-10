@@ -851,9 +851,9 @@ func TestModelCompacted(t *testing.T) {
 	}
 	// A /compact before any call of this process: the context shows on the model claude runs.
 	m2, _ := modelNew(t, false)
-	modelEvents(m2, protocol.Init{SessionID: "two", Model: "claude-opus-5-5"})
-	m2.windows = map[string]int{"claude-opus-5-5": 1000000}
-	modelEvents(m2, protocol.Compacted{Trigger: "manual", Before: 165745, After: 6555})
+	modelEvents(m2, protocol.Init{SessionID: "two", Model: "claude-opus-5-5"},
+		protocol.Compacted{Trigger: "manual", Before: 165745, After: 6555},
+		protocol.Result{ContextWindows: map[string]int{"claude-opus-5-5": 1000000}}) // the compaction's turn tells the window
 	if m2.Status.Context == 0 {
 		t.Errorf("before any call: status context %v, model %q", m2.Status.Context, m2.Status.Model)
 	}
