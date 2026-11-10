@@ -112,6 +112,10 @@ type Model struct {
 	queueAt   int                 // index in pending of the prompt taken into the prompt to edit; -1 for none
 
 	attached map[string]attachment // what the placeholders of long pastes and pictures stand for, by placeholder
+
+	bangRun  *bangRun // the ! command running; nil for none
+	bangs    int      // ! commands run, for their ids
+	bangSaid []string // the ! commands run since the last prompt, as claude is to see them with the next
 }
 
 type EntryKind int
@@ -134,6 +138,7 @@ type ChatEntry struct {
 	GoalEcho bool           // a locally displayed goal awaiting the CLI's confirmation
 	Bash     bool           // a reply's: what a Bash call of main's says it does, no reply of claude's
 	Call     string         // a Bash reply's: the id of its call, whose lines a click finds in main's terminal
+	Bang     string         // a CommandEntry's: the ! command whose output Text is; "" while it runs
 	At       time.Time      // when it was said, shown grey at the right; zero for not known
 	Tokens   protocol.Usage // a prompt's: the tokens its turn took, zero for not known; not drawn while the count is wrong
 }
@@ -272,6 +277,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.paste(msg.Content)
 	case imagesMsg:
 		m.pasted(msg)
+	case bangDoneMsg:
+		m.bangDone(msg)
 	case tea.KeyPressMsg:
 		m.interact()
 		cmd = m.handleKey(msg)
@@ -574,9 +581,13 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			t := &m.Chat[i].Tokens
 			t.Input, t.Output, t.CacheRead, t.CacheWrite = t.Input+took.Input, t.Output+took.Output, t.CacheRead+took.CacheRead, t.CacheWrite+took.CacheWrite
 		}
-		if len(m.pending) > 0 { // claude goes on with what was typed meanwhile: it is not done
+		switch {
+		case len(m.pending) > 0: // claude goes on with what was typed meanwhile: it is not done
 			m.notice = ""
 			m.flush()
+		case len(m.bangSaid) > 0: // or with the ! commands run meanwhile
+			m.notice = ""
+			m.sendBangs()
 		}
 	case protocol.Stderr:
 		m.stderr = append(m.stderr[max(0, len(m.stderr)-maxStderr+1):], ev.Line)
@@ -840,6 +851,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		switch {
 		case m.ideState().Pinned: // first back to every agent at work: a claude at work goes on
 			m.pinView("")
+		case m.bangStop(): // a ! command first: claude goes on
 		case m.canInterrupt():
 			m.interrupt()
 		case len(m.Input.Text) > 0 || m.queueAt >= 0:
@@ -858,6 +870,12 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) submit() tea.Cmd {
+	if command, ok := bangCommand(string(m.Input.Text)); ok { // as typed: tidy would touch its quotes
+		m.Input = Input{}
+		m.ChatScroll = 0
+		m.remember("!" + command)
+		return m.bang(command)
+	}
 	text := tidy(string(m.Input.Text))
 	if text == "" {
 		return nil

@@ -149,7 +149,11 @@ func drawExport(chat []ChatEntry, project, when string) string {
 				b.WriteString(t + "\n\n")
 			}
 		case CommandEntry:
-			fmt.Fprintf(&b, "```\n%s\n```\n\n", strings.TrimSpace(drawUnescaped(e.Text)))
+			text := drawUnescaped(e.Text)
+			if e.Bang != "" {
+				text = "! " + e.Bang + "\n" + e.Text
+			}
+			fmt.Fprintf(&b, "```\n%s\n```\n\n", strings.TrimSpace(text))
 		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")

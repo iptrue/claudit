@@ -23,6 +23,9 @@ var styleYou = lipgloss.NewStyle().Foreground(theme.Blue)
 // styleBash is the colour of what a Bash call of main's says it does: the green of strings in code.
 var styleBash = lipgloss.NewStyle().Foreground(theme.String)
 
+// styleBang marks the shell mode of the prompt, a "!" first, pink as in Claude Code.
+var styleBang = lipgloss.NewStyle().Foreground(theme.Pink)
+
 // chatCache keeps the drawn lines of each chat entry, so a frame redraws only the entries that changed.
 type chatCache struct {
 	width   int
@@ -173,6 +176,9 @@ func drawEntry(e ChatEntry, w int) []string {
 		}
 		return lines
 	case CommandEntry:
+		if e.Bang != "" {
+			return drawBang(e, w)
+		}
 		lines := drawDense(drawCommand(e.Text, w-2))
 		for i, l := range lines {
 			gutter := "  "
@@ -189,8 +195,34 @@ func drawEntry(e ChatEntry, w int) []string {
 	return nil
 }
 
+// drawBang renders a ! command as typed after a "!", then what it printed under a "⎿", as Claude
+// Code shows them; "running…" until it ends.
+func drawBang(e ChatEntry, w int) []string {
+	lines := drawDense(drawWrap(e.Bang, w-2))
+	for i, l := range lines {
+		prefix := "  "
+		if i == 0 {
+			prefix = "! "
+		}
+		lines[i] = styleYou.Render(prefix + l)
+	}
+	out := drawDense(drawWrap(e.Text, w-4))
+	st := styleFg
+	if e.Text == "" {
+		out, st = []string{"running…"}, styleDim
+	}
+	for i, l := range out {
+		gutter := "    "
+		if i == 0 {
+			gutter = "  ⎿ "
+		}
+		lines = append(lines, styleDim.Render(gutter)+st.Render(l))
+	}
+	return lines
+}
+
 func chatGoal(e ChatEntry) (string, bool) {
-	if e.Kind != CommandEntry || !strings.Contains(e.Text, "Goal set:") {
+	if e.Kind != CommandEntry || e.Bang != "" || !strings.Contains(e.Text, "Goal set:") {
 		return "", false
 	}
 	text, ok := strings.CutPrefix(strings.TrimSpace(drawClean(e.Text)), "Goal set:")
@@ -219,10 +251,18 @@ func renderInput(in *Input, width int, placeholder string, dim bool) (out string
 	if dim {
 		prompt, text = styleDim.Render("› "), styleDim
 	}
-	if len(in.Text) == 0 {
+	runes, cursor := in.Text, in.Cursor
+	if bangInput(runes) { // the shell mode: its "!" stands in for the "›"
+		prompt, runes, cursor = styleBang.Render("! "), runes[1:], max(0, cursor-1)
+		if dim {
+			prompt = styleDim.Render("! ")
+		}
+		placeholder = "a shell command, run in the project"
+	}
+	if len(runes) == 0 {
 		return drawFit(prompt+styleDim.Render(placeholder), width), min(2, width-1)
 	}
-	disp, cur := drawInputRunes(in.Text, in.Cursor)
+	disp, cur := drawInputRunes(runes, cursor)
 	start := drawScroll(disp, cur, width-2)
 	shown := ansi.Truncate(string(disp[start:]), max(0, width-2), "")
 	x := 2 + ansi.StringWidth(string(disp[start:cur]))

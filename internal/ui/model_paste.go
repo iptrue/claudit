@@ -65,7 +65,8 @@ func (m *Model) attach(a attachment) string {
 }
 
 // message is the UserMessage for a prompt: pasted texts back in place of their placeholders, the
-// pictures attached, theirs left in the text for the model to tell them apart.
+// pictures attached, theirs left in the text for the model to tell them apart; the ! commands run
+// since the last prompt in front.
 func (m *Model) message(text string) protocol.UserMessage {
 	var msg protocol.UserMessage
 	msg.Text = placeholderRe.ReplaceAllStringFunc(text, func(p string) string {
@@ -79,7 +80,19 @@ func (m *Model) message(text string) protocol.UserMessage {
 		}
 		return a.text
 	})
+	msg.Text = m.withBangs(msg.Text)
 	return msg
+}
+
+// pastedTexts is text with the pasted texts back in place of their placeholders, for a ! command
+// to run what was pasted; a picture's placeholder stays.
+func (m *Model) pastedTexts(text string) string {
+	return placeholderRe.ReplaceAllStringFunc(text, func(p string) string {
+		if a, ok := m.attached[p]; ok && a.image == nil {
+			return a.text
+		}
+		return p
+	})
 }
 
 // pasted puts pictures read for the prompt at its cursor.
