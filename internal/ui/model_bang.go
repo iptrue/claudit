@@ -15,12 +15,14 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/pixelbender/claudit/internal/protocol"
 )
 
 // A prompt that starts with "!" is a shell command, as in Claude Code's bash mode: claudit runs it
 // itself in the project, since claude -p would take it for words to the model. The chat shows
-// what it printed; claude sees the command and its output with the next prompt, in the tags
-// Claude Code uses, and no turn starts for it alone.
+// what it printed; claude gets the command and its output in the tags Claude Code uses, as a
+// message of its own that starts a turn, or, while claude works, once its turn ends.
 
 // bangTimeout is how long a ! command may run before it is stopped.
 const bangTimeout = 10 * time.Minute
@@ -117,7 +119,8 @@ func bangEnv(env []string) []string {
 	return out
 }
 
-// bangDone puts what a ! command printed in the chat and keeps it for claude's next prompt.
+// bangDone puts what a ! command printed in the chat and sends it to claude: at once when claude
+// is free, else once its turn ends. A command the user stopped waits for the next prompt.
 func (m *Model) bangDone(msg bangDoneMsg) {
 	r := m.bangRun
 	if r == nil || r.id != msg.id {
@@ -152,6 +155,20 @@ func (m *Model) bangDone(msg bangDoneMsg) {
 	}
 	m.bangSaid = append(m.bangSaid, "<bash-input>"+r.command+"</bash-input>\n<bash-stdout>"+
 		strings.TrimRight(stdout, "\n")+"</bash-stdout><bash-stderr>"+strings.TrimRight(stderr, "\n")+"</bash-stderr>")
+	if !r.stopped && !m.Status.Busy && len(m.pending) == 0 {
+		m.sendBangs()
+	}
+}
+
+// sendBangs sends the ! commands run since the last prompt as a message of their own, which
+// starts a turn. It has no prompt in the chat: like a slash command's, there is none to cut.
+func (m *Model) sendBangs() {
+	if len(m.bangSaid) == 0 || m.Status.Replay || m.Status.State == "exited" {
+		return
+	}
+	m.send(protocol.UserMessage{Text: strings.Join(m.bangSaid, "\n")})
+	m.bangSaid = nil
+	m.Status.State, m.Status.Busy, m.Status.Alert, m.cmdTurn, m.effortTurn = "thinking", true, false, true, false
 }
 
 // bangStop stops the ! command running, if any, and reports whether there was one.

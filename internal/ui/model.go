@@ -581,9 +581,13 @@ func (m *Model) handleEvent(ev protocol.Event) {
 			t := &m.Chat[i].Tokens
 			t.Input, t.Output, t.CacheRead, t.CacheWrite = t.Input+took.Input, t.Output+took.Output, t.CacheRead+took.CacheRead, t.CacheWrite+took.CacheWrite
 		}
-		if len(m.pending) > 0 { // claude goes on with what was typed meanwhile: it is not done
+		switch {
+		case len(m.pending) > 0: // claude goes on with what was typed meanwhile: it is not done
 			m.notice = ""
 			m.flush()
+		case len(m.bangSaid) > 0: // or with the ! commands run meanwhile
+			m.notice = ""
+			m.sendBangs()
 		}
 	case protocol.Stderr:
 		m.stderr = append(m.stderr[max(0, len(m.stderr)-maxStderr+1):], ev.Line)

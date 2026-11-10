@@ -5,6 +5,7 @@ package ui
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,13 +101,10 @@ func TestBangCommand(t *testing.T) {
 	}
 }
 
-// A ! command runs in the project without a turn; claude sees it and its output with the next prompt.
+// A ! command runs in the project; claude, free, gets it and its output at once, and goes on.
 func TestModelBang(t *testing.T) {
 	m, sent := modelLocalNew(t)
 	modelBang(t, m, `!printf '%s|' "a  b"; echo; pwd`)
-	if len(*sent) != 0 || m.Status.Busy {
-		t.Fatalf("a ! command went to claude: %#v", *sent)
-	}
 	root, _ := filepath.EvalSymlinks(m.Sim.State().Root)
 	if e := modelBangEntry(t, m); e.Bang != `printf '%s|' "a  b"; echo; pwd` || !strings.HasPrefix(e.Text, "a  b|") {
 		t.Fatalf("chat %+v", m.Chat)
@@ -117,12 +115,13 @@ func TestModelBang(t *testing.T) {
 	if got := m.history[len(m.history)-1]; got != `!printf '%s|' "a  b"; echo; pwd` {
 		t.Errorf("history %q", got)
 	}
-
-	modelLocalSay(m, "what changed")
 	text := modelBangSent(t, sent)
 	want := "<bash-input>printf '%s|' \"a  b\"; echo; pwd</bash-input>\n<bash-stdout>a  b|\n"
-	if !strings.HasPrefix(text, want) || !strings.HasSuffix(text, "</bash-stdout><bash-stderr></bash-stderr>\n\nWhat changed") {
+	if !strings.HasPrefix(text, want) || !strings.HasSuffix(text, "</bash-stdout><bash-stderr></bash-stderr>") {
 		t.Fatalf("sent %q", text)
+	}
+	if !m.Status.Busy || m.Status.State != "thinking" || slices.ContainsFunc(m.Chat, func(e ChatEntry) bool { return e.Kind == UserEntry }) {
+		t.Fatalf("no turn, or a prompt in the chat: %+v %+v", m.Status, m.Chat)
 	}
 
 	*sent = nil
@@ -140,23 +139,39 @@ func TestModelBangFails(t *testing.T) {
 	if !modelResumeSaid(m, "out\noops\n[exit code 3]") {
 		t.Fatalf("chat %+v", m.Chat)
 	}
-	modelLocalSay(m, "why")
 	if text := modelBangSent(t, sent); !strings.Contains(text, "<bash-stdout>out</bash-stdout><bash-stderr>oops\n[exit code 3]</bash-stderr>") {
 		t.Fatalf("sent %q", text)
 	}
 }
 
-// A slash command goes alone: the output waits for the next prompt.
+// While claude works, the output waits for its turn to end, then goes as a message of its own.
+func TestModelBangBusy(t *testing.T) {
+	m, sent := modelLocalNew(t)
+	modelLocalSay(m, "work")
+	*sent = nil
+	modelBang(t, m, "!echo hi")
+	if len(*sent) != 0 {
+		t.Fatalf("sent while busy: %#v", *sent)
+	}
+	modelEvents(m, protocol.Result{})
+	if text := modelBangSent(t, sent); text != "<bash-input>echo hi</bash-input>\n<bash-stdout>hi</bash-stdout><bash-stderr></bash-stderr>" || !m.Status.Busy {
+		t.Fatalf("sent %q busy %v", text, m.Status.Busy)
+	}
+}
+
+// A slash command queued meanwhile goes alone; the output follows once its turn ends.
 func TestModelBangSlash(t *testing.T) {
 	m, sent := modelLocalNew(t)
+	modelLocalSay(m, "work")
 	modelBang(t, m, "!echo hi")
 	modelLocalSay(m, "/context")
+	*sent = nil
+	modelEvents(m, protocol.Result{})
 	if text := modelBangSent(t, sent); text != "/context" {
 		t.Fatalf("sent %q", text)
 	}
 	*sent = nil
 	modelEvents(m, protocol.Result{})
-	modelLocalSay(m, "go")
 	if text := modelBangSent(t, sent); !strings.HasPrefix(text, "<bash-input>echo hi</bash-input>") {
 		t.Fatalf("sent %q", text)
 	}
@@ -175,6 +190,32 @@ func TestModelBangQueued(t *testing.T) {
 	modelEvents(m, protocol.Result{})
 	if text := modelBangSent(t, sent); !strings.HasPrefix(text, "<bash-input>echo hi</bash-input>") || !strings.HasSuffix(text, "Then this") {
 		t.Fatalf("sent %q", text)
+	}
+}
+
+// A stopped command starts no turn: its output waits for the next prompt.
+func TestModelBangStoppedWaits(t *testing.T) {
+	m, sent := modelLocalNew(t)
+	cmd := modelLocalSay(m, "!sleep 30")
+	m.Update(inputKey("esc"))
+	m.Update(cmd())
+	if len(*sent) != 0 || m.Status.Busy {
+		t.Fatalf("a stopped command went to claude: %#v", *sent)
+	}
+	modelLocalSay(m, "why")
+	if text := modelBangSent(t, sent); !strings.HasPrefix(text, "<bash-input>sleep 30</bash-input>") || !strings.HasSuffix(text, "[stopped]</bash-stderr>\n\nWhy") {
+		t.Fatalf("sent %q", text)
+	}
+}
+
+// Claude gone, the output stays: nothing to send it to.
+func TestModelBangExited(t *testing.T) {
+	m, sent := modelLocalNew(t)
+	cmd := modelLocalSay(m, "!echo hi")
+	modelEvents(m, protocol.Exited{})
+	m.Update(cmd())
+	if len(*sent) != 0 || len(m.bangSaid) != 1 {
+		t.Fatalf("sent %#v said %q", *sent, m.bangSaid)
 	}
 }
 
@@ -241,12 +282,12 @@ func TestRunBangErrors(t *testing.T) {
 	if done.err == nil || done.code != -1 {
 		t.Fatalf("no dir: %+v", done)
 	}
-	m, _ := modelLocalNew(t)
+	m, sent := modelLocalNew(t)
 	m.bangRun = &bangRun{id: 2, command: "true", stop: func() {}}
 	m.Chat = append(m.Chat, ChatEntry{Kind: CommandEntry, Bang: "true"})
 	m.Update(done)
-	if !modelResumeSaid(m, "no such file or directory]") || !strings.Contains(m.bangSaid[0], "no such file or directory]</bash-stderr>") {
-		t.Fatalf("chat %+v said %q", m.Chat, m.bangSaid)
+	if !modelResumeSaid(m, "no such file or directory]") || !strings.Contains(modelBangSent(t, sent), "no such file or directory]</bash-stderr>") {
+		t.Fatalf("chat %+v sent %#v", m.Chat, *sent)
 	}
 }
 
