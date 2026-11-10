@@ -7,12 +7,14 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/pixelbender/claudit/internal/history"
 	"github.com/pixelbender/claudit/internal/protocol"
 )
 
@@ -217,4 +219,58 @@ func loadImage(path string) (protocol.Image, error) {
 		return protocol.Image{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return im, nil
+}
+
+// UseHistory starts the history, before the first prompt, with the last prompts typed in dir,
+// from Claude Code's history file, and adds the prompts sent from now on to it.
+func (m *Model) UseHistory(file, dir string) {
+	m.historyFile, m.historyDir = file, dir
+	if entries, err := history.Load(file, dir, history.Limit); err == nil {
+		m.history = entries
+	}
+	m.histAt = len(m.history)
+}
+
+// pastedIn is the pasted texts of text's placeholders, by their number.
+func (m *Model) pastedIn(text string) map[int]string {
+	var out map[int]string
+	for _, p := range placeholderRe.FindAllString(text, -1) {
+		a, ok := m.attached[p]
+		n, isText := pastedNumber(p)
+		if !ok || a.image != nil || !isText {
+			continue
+		}
+		if out == nil {
+			out = map[int]string{}
+		}
+		out[n] = a.text
+	}
+	return out
+}
+
+// recalled is a history entry for the prompt: a placeholder whose text is not the one this
+// session has under it, as one from an earlier session, stands for its text anew.
+func (m *Model) recalled(e history.Entry) string {
+	return placeholderRe.ReplaceAllStringFunc(e.Text, func(p string) string {
+		n, isText := pastedNumber(p)
+		text, ok := e.Pasted[n]
+		if !isText || !ok {
+			return p
+		}
+		if a, have := m.attached[p]; have && a.image == nil && a.text == text {
+			return p
+		}
+		return m.attach(attachment{text: text})
+	})
+}
+
+// pastedNumber is the number of a "[Pasted text #N …]" placeholder.
+func pastedNumber(p string) (int, bool) {
+	rest, ok := strings.CutPrefix(p, "[Pasted text #")
+	if !ok {
+		return 0, false
+	}
+	end := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' })
+	n, err := strconv.Atoi(rest[:max(0, end)])
+	return n, err == nil
 }

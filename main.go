@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/pixelbender/claudit/internal/claude"
+	"github.com/pixelbender/claudit/internal/history"
 	"github.com/pixelbender/claudit/internal/protocol"
 	"github.com/pixelbender/claudit/internal/ui"
 )
@@ -63,6 +64,7 @@ func run(args []string) error {
 	m := ui.New(sess.Send, cwd, replay)
 	if !replay {
 		m.StartModel = claude.Model(args, cwd)
+		m.UseHistory(history.File(), history.Project(cwd))
 	}
 	p := tea.NewProgram(m, tea.WithFilter(ui.Filter), tea.WithContext(ctx)) // a hangup ends the TUI too
 	done := make(chan struct{})

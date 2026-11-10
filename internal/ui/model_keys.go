@@ -185,6 +185,6 @@ func (m *Model) recall(d int) {
 		m.Input = m.histDraft
 		return
 	}
-	text := []rune(m.history[i])
+	text := []rune(m.recalled(m.history[i]))
 	m.Input = Input{Text: text, Cursor: len(text)}
 }

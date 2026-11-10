@@ -16,6 +16,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/pixelbender/claudit/internal/history"
 	"github.com/pixelbender/claudit/internal/ide"
 	"github.com/pixelbender/claudit/internal/ideview"
 	"github.com/pixelbender/claudit/internal/protocol"
@@ -84,7 +85,9 @@ type Model struct {
 	notice       string             // what to announce after this message, if Away
 	typedAt      time.Time          // when a key last went to the prompt
 	streak       bool               // the open popup came up mid-typing: keys go on to the prompt until a pause
-	history      []string           // prompts sent, oldest first
+	history      []history.Entry    // prompts sent, oldest first: Claude Code's of the project, then this session's
+	historyFile  string             // where prompts sent are added for Claude Code too; "" for nowhere
+	historyDir   string             // the project the history file names them by
 	histAt       int                // the history entry in the prompt while browsing it; len(history) when not
 	histDraft    Input              // the prompt as typed before browsing the history
 	interrupting bool               // an Interrupt was sent: the error Result it brings ends the turn as asked
@@ -962,10 +965,15 @@ func (m *Model) chatEntries() []ChatEntry {
 	return entries
 }
 
-// remember adds a prompt to the history, unless it repeats the last one.
+// remember adds a prompt to the history, with the texts its placeholders stand for, unless it
+// repeats the last one; Claude Code's history file gets it too.
 func (m *Model) remember(text string) {
-	if n := len(m.history); n == 0 || m.history[n-1] != text {
-		m.history = append(m.history, text)
+	if n := len(m.history); n == 0 || m.history[n-1].Text != text {
+		e := history.Entry{Text: text, Pasted: m.pastedIn(text)}
+		m.history = append(m.history, e)
+		if m.historyFile != "" && !m.Status.Replay {
+			_ = history.Append(m.historyFile, m.historyDir, m.session, e, m.clock()) // the history is a convenience: a failed write costs a recall
+		}
 	}
 	m.histAt = len(m.history)
 }
