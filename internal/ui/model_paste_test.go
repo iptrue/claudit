@@ -58,8 +58,8 @@ func TestPasteLongTextStandsAsPlaceholder(t *testing.T) {
 	if len(*sent) != 1 || modelUserText((*sent)[0]) != "See "+long+strings.Repeat("x", pasteChars+1) {
 		t.Fatalf("sent %#v", *sent)
 	}
-	if got := m.Chat[len(m.Chat)-1].Text; got != "See [Pasted text #1 +3 lines][Pasted text #2]" {
-		t.Errorf("chat %q, want the placeholders", got)
+	if got := m.Chat[len(m.Chat)-1].Text; got != "See "+long+strings.Repeat("x", pasteChars+1) {
+		t.Errorf("chat %q, want the pasted texts", got)
 	}
 }
 
@@ -78,6 +78,19 @@ func TestPasteQueuedAndRecalledKeepTheirText(t *testing.T) {
 	modelEvents(m, protocol.Result{})
 	if len(*sent) != 2 || modelUserText((*sent)[1]) != "1\n2\n3\n4" {
 		t.Fatalf("sent %#v", *sent)
+	}
+	for _, e := range m.Chat {
+		if e.Kind == UserEntry && e.Text != "1\n2\n3\n4" {
+			t.Errorf("chat %q, want the pasted text", e.Text)
+		}
+	}
+	// Queued behind a turn, a prompt shows its text too; a picture keeps its placeholder.
+	m.Status.Busy = true
+	picture := m.attach(attachment{image: &protocol.Image{Media: "image/png", Data: []byte{0}}})
+	m.pending = []string{m.attach(attachment{text: "5\n6"}) + " " + picture}
+	entries := m.chatEntries()
+	if e := entries[len(entries)-1]; !e.Queued || e.Text != "5\n6 "+picture {
+		t.Errorf("queued %#v", e)
 	}
 }
 
