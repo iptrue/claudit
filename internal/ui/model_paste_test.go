@@ -298,3 +298,15 @@ func TestPasteInvalidImageDoesNotAttach(t *testing.T) {
 		t.Fatalf("invalid image: err=%v, images=%d", got.err, len(got.images))
 	}
 }
+
+// A ! command gets the pasted texts in place of their placeholders; a picture's, and one claudit
+// does not know, stay.
+func TestPastedTexts(t *testing.T) {
+	m, _ := modelNew(t, false)
+	text := m.attach(attachment{text: "one\ntwo"})
+	picture := m.attach(attachment{image: &protocol.Image{Media: "image/png", Data: []byte{0}}})
+	got := m.pastedTexts("cat " + text + " " + picture + " [Pasted text #9]")
+	if want := "cat one\ntwo [Image #2] [Pasted text #9]"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

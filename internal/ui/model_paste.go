@@ -84,6 +84,17 @@ func (m *Model) message(text string) protocol.UserMessage {
 	return msg
 }
 
+// pastedTexts is text with the pasted texts back in place of their placeholders, for a ! command
+// to run what was pasted; a picture's placeholder stays.
+func (m *Model) pastedTexts(text string) string {
+	return placeholderRe.ReplaceAllStringFunc(text, func(p string) string {
+		if a, ok := m.attached[p]; ok && a.image == nil {
+			return a.text
+		}
+		return p
+	})
+}
+
 // pasted puts pictures read for the prompt at its cursor.
 func (m *Model) pasted(msg imagesMsg) {
 	if msg.err != nil {

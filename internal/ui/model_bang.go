@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -27,13 +26,18 @@ import (
 // bangTimeout is how long a ! command may run before it is stopped.
 const bangTimeout = 10 * time.Minute
 
-// bangLimit is how many bytes of each of stdout and stderr go to the chat and to claude.
-const bangLimit = 30000
+// bangLimit is how many bytes of each of stdout and stderr go to the chat and to claude, bangKept
+// how many claudit keeps of each as printed: room for the colours, which neither shows.
+const (
+	bangLimit = 30000
+	bangKept  = 4 * bangLimit
+)
 
 // bangRun is the ! command running.
 type bangRun struct {
 	id      int
-	command string
+	command string // as typed, as the chat shows it
+	script  string // what runs: the command with its pasted texts in place of their placeholders
 	stop    context.CancelFunc
 	stopped bool // esc or ctrl+c stopped it
 }
@@ -41,9 +45,9 @@ type bangRun struct {
 // bangDoneMsg is what a ! command left once it ended.
 type bangDoneMsg struct {
 	id             int
-	stdout, stderr string
-	code           int   // exit code; -1 when it did not exit by itself
-	err            error // it could not start, or it ran out of time
+	stdout, stderr string // each cut to bangLimit bytes
+	code           int    // exit code; -1 when it did not exit by itself
+	err            error  // it could not start, or it ran out of time
 }
 
 // bangInput reports whether the prompt is in the shell mode: a "!" first.
@@ -70,7 +74,8 @@ func (m *Model) bang(command string) tea.Cmd {
 	}
 	m.bangs++
 	ctx, stop := context.WithTimeout(context.Background(), bangTimeout)
-	m.bangRun = &bangRun{id: m.bangs, command: command, stop: stop}
+	script := m.pastedTexts(command)
+	m.bangRun = &bangRun{id: m.bangs, command: command, script: script, stop: stop}
 	at := len(m.Chat)
 	if m.Status.Busy && at > 0 && m.Chat[at-1].Kind == AssistantEntry {
 		at-- // keep the streaming reply last, as local output does
@@ -79,7 +84,7 @@ func (m *Model) bang(command string) tea.Cmd {
 	id, dir := m.bangs, m.Sim.State().Root
 	return func() tea.Msg {
 		defer stop()
-		return runBang(ctx, id, command, dir)
+		return runBang(ctx, id, script, dir)
 	}
 }
 
@@ -89,7 +94,7 @@ func runBang(ctx context.Context, id int, command, dir string) bangDoneMsg {
 	cmd := exec.CommandContext(ctx, shell, flag, command)
 	cmd.Dir = dir
 	cmd.Env = bangEnv(os.Environ())
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr bangOutput
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	bangProcess(cmd)
 	err := cmd.Run()
@@ -127,7 +132,7 @@ func (m *Model) bangDone(msg bangDoneMsg) {
 		return
 	}
 	m.bangRun = nil
-	stdout, stderr := bangClip(ansi.Strip(msg.stdout)), bangClip(ansi.Strip(msg.stderr))
+	stdout, stderr := msg.stdout, msg.stderr
 	var note string
 	switch {
 	case msg.err != nil:
@@ -153,7 +158,7 @@ func (m *Model) bangDone(msg bangDoneMsg) {
 	if note != "" {
 		stderr = strings.TrimLeft(strings.TrimRight(stderr, "\n")+"\n["+note+"]", "\n")
 	}
-	m.bangSaid = append(m.bangSaid, "<bash-input>"+r.command+"</bash-input>\n<bash-stdout>"+
+	m.bangSaid = append(m.bangSaid, "<bash-input>"+r.script+"</bash-input>\n<bash-stdout>"+
 		strings.TrimRight(stdout, "\n")+"</bash-stdout><bash-stderr>"+strings.TrimRight(stderr, "\n")+"</bash-stderr>")
 	if !r.stopped && !m.Status.Busy && len(m.pending) == 0 {
 		m.sendBangs()
@@ -196,14 +201,34 @@ func (m *Model) withBangs(text string) string {
 	return said + "\n\n" + text
 }
 
-// bangClip cuts s to bangLimit bytes on a rune boundary, saying how much is left out.
-func bangClip(s string) string {
-	if len(s) <= bangLimit {
+// bangOutput is a stream of a ! command: it keeps the first bangKept bytes and counts the rest,
+// still taking all of it, for a command such as yes prints without end until it is stopped.
+type bangOutput struct {
+	kept []byte
+	size int
+}
+
+func (o *bangOutput) Write(p []byte) (int, error) {
+	if room := bangKept - len(o.kept); room > 0 {
+		o.kept = append(o.kept, p[:min(room, len(p))]...)
+	}
+	o.size += len(p)
+	return len(p), nil
+}
+
+// String is what the stream printed without its colours, cut to bangLimit bytes on a rune
+// boundary, saying how much is left out.
+func (o *bangOutput) String() string {
+	s := ansi.Strip(string(o.kept))
+	cut, left := len(s), o.size-len(o.kept)
+	if cut > bangLimit {
+		cut = bangLimit
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+	}
+	if left += len(s) - cut; left == 0 {
 		return s
 	}
-	cut := bangLimit
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "\n… " + strconv.Itoa(len(s)-cut) + " more bytes"
+	return s[:cut] + "\n… " + strconv.Itoa(left) + " more bytes"
 }

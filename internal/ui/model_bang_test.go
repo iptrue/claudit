@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"slices"
@@ -112,9 +113,6 @@ func TestModelBang(t *testing.T) {
 	if !slicesAnyContains(m.Chat, root) && !slicesAnyContains(m.Chat, m.Sim.State().Root) {
 		t.Errorf("not run in the project %q: %+v", root, m.Chat)
 	}
-	if got := m.history[len(m.history)-1]; got != `!printf '%s|' "a  b"; echo; pwd` {
-		t.Errorf("history %q", got)
-	}
 	text := modelBangSent(t, sent)
 	want := "<bash-input>printf '%s|' \"a  b\"; echo; pwd</bash-input>\n<bash-stdout>a  b|\n"
 	if !strings.HasPrefix(text, want) || !strings.HasSuffix(text, "</bash-stdout><bash-stderr></bash-stderr>") {
@@ -122,6 +120,9 @@ func TestModelBang(t *testing.T) {
 	}
 	if !m.Status.Busy || m.Status.State != "thinking" || slices.ContainsFunc(m.Chat, func(e ChatEntry) bool { return e.Kind == UserEntry }) {
 		t.Fatalf("no turn, or a prompt in the chat: %+v %+v", m.Status, m.Chat)
+	}
+	if m.recall(-1); string(m.Input.Text) != `!printf '%s|' "a  b"; echo; pwd` {
+		t.Errorf("history %q", string(m.Input.Text))
 	}
 
 	*sent = nil
@@ -299,14 +300,70 @@ func TestModelBangNoOutput(t *testing.T) {
 	}
 }
 
-func TestBangClip(t *testing.T) {
-	if s := bangClip("short"); s != "short" {
+// A stream keeps a head of bangKept bytes however much a command prints, and is cut to bangLimit on
+// a rune boundary; colours do not count.
+func TestBangOutput(t *testing.T) {
+	var short bangOutput
+	_, _ = short.Write([]byte("short"))
+	if s := short.String(); s != "short" {
 		t.Errorf("short: %q", s)
 	}
-	long := strings.Repeat("a", bangLimit-1) + "яz"
-	s := bangClip(long)
-	if !strings.HasSuffix(s, "\n… 3 more bytes") || strings.Contains(s, "\xd1") {
+	var full bangOutput
+	_, _ = full.Write([]byte(strings.Repeat("a", bangLimit)))
+	if s := full.String(); s != strings.Repeat("a", bangLimit) {
+		t.Errorf("full: %q", s[len(s)-30:])
+	}
+	var long bangOutput
+	_, _ = long.Write([]byte(strings.Repeat("a", bangLimit-1) + "я"))
+	_, _ = long.Write([]byte("z"))
+	for range 1000 {
+		if n, err := long.Write(bytes.Repeat([]byte("b"), 4096)); n != 4096 || err != nil {
+			t.Fatalf("write: %d %v", n, err)
+		}
+	}
+	if len(long.kept) > bangKept {
+		t.Errorf("kept %d bytes", len(long.kept))
+	}
+	if s := long.String(); !strings.HasSuffix(s, "\n… 4096003 more bytes") || strings.Contains(s, "\xd1") || len(s) > bangLimit+30 {
 		t.Errorf("clip: %q", s[len(s)-30:])
+	}
+	var colour bangOutput
+	_, _ = colour.Write([]byte(strings.Repeat("\x1b[1;32mok\x1b[0m line\n", 3000)))
+	if s := colour.String(); s != strings.Repeat("ok line\n", 3000) {
+		t.Errorf("colour: %q", s[len(s)-30:])
+	}
+}
+
+// What a ! command prints past bangLimit is left out, and said so.
+func TestModelBangLong(t *testing.T) {
+	m, sent := modelLocalNew(t)
+	modelBang(t, m, `!awk 'BEGIN { for (i = 0; i < 20000; i++) printf "aaaaa" }'`)
+	if !modelResumeSaid(m, "\n… 70000 more bytes") {
+		t.Fatalf("chat %q", modelBangEntry(t, m).Text[bangLimit-10:])
+	}
+	if text := modelBangSent(t, sent); !strings.Contains(text, "\n… 70000 more bytes</bash-stdout>") {
+		t.Fatalf("sent %q", text[len(text)-80:])
+	}
+}
+
+// A text pasted into a ! command runs as pasted; the chat keeps its placeholder.
+func TestModelBangPaste(t *testing.T) {
+	m, sent := modelLocalNew(t)
+	m.Input = Input{Text: []rune("!"), Cursor: 1}
+	m.Update(tea.PasteMsg{Content: "echo one\necho two\necho three\necho four"})
+	if typed := string(m.Input.Text); typed != "![Pasted text #1 +3 lines]" {
+		t.Fatalf("typed %q", typed)
+	}
+	_, cmd := m.Update(inputKey("enter"))
+	if cmd == nil {
+		t.Fatalf("nothing ran; chat %+v", m.Chat)
+	}
+	m.Update(cmd())
+	if e := modelBangEntry(t, m); e.Bang != "[Pasted text #1 +3 lines]" || e.Text != "one\ntwo\nthree\nfour" {
+		t.Fatalf("chat %+v", e)
+	}
+	if text := modelBangSent(t, sent); !strings.HasPrefix(text, "<bash-input>echo one\necho two\necho three\necho four</bash-input>\n<bash-stdout>one\n") {
+		t.Fatalf("sent %q", text)
 	}
 }
 
