@@ -204,16 +204,6 @@ func (m *Model) selScroll() tea.Cmd {
 	return m.holdSelScroll()
 }
 
-// selectChat selects the whole conversation and copies it, as a drag over all of it would.
-func (m *Model) selectChat() tea.Cmd {
-	b, n := m.chatView.box, len(m.chatText())
-	if n == 0 {
-		return nil
-	}
-	m.sel = selection{box: b, chat: true, drag: true, from: image.Pt(b.Min.X, 0), to: image.Pt(b.Max.X-1, n-1)}
-	return m.copySelection()
-}
-
 // selText is what the selection covers: in the chat, the text of every line it spans, on screen
 // or not, past the arrows and short of the times; elsewhere what the last frame drew. Under a
 // popup or the help nothing shows it: it covers nothing.
@@ -283,10 +273,13 @@ func (m *Model) copySelection() tea.Cmd {
 	return copyText(text)
 }
 
+// writeClipboard puts text on the system clipboard; a test catches it there instead.
+var writeClipboard = writeClipboardText
+
 // copyText uses the system clipboard, falling back to the terminal's OSC 52 support.
 func copyText(text string) tea.Cmd {
 	return func() tea.Msg {
-		if writeClipboardText(text) == nil {
+		if writeClipboard(text) == nil {
 			return nil
 		}
 		return tea.SetClipboard(text)()

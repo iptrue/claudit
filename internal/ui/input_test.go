@@ -144,7 +144,7 @@ func TestInputEditReportsUnhandledKeys(t *testing.T) {
 func TestInputLineEditingInPrompt(t *testing.T) {
 	m, _ := modelNew(t, false)
 	modelPress(m, inputTyped("fix the bug")...)
-	modelPress(m, inputKeys("alt+b ctrl+k ctrl+a ctrl+d ctrl+e ctrl+y")...)
+	modelPress(m, inputKeys("alt+b ctrl+k home ctrl+d ctrl+e ctrl+y")...)
 	if got := string(m.Input.Text); got != "ix the bug" || m.Input.Cursor != 10 {
 		t.Errorf("prompt %q cursor %d", got, m.Input.Cursor)
 	}

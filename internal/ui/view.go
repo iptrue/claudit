@@ -183,7 +183,8 @@ func (m *Model) View() tea.View {
 	}
 	selecting := m.sel.drag && m.sel.out(m.Now) < 1 && m.Popup == nil && !m.ShowHelp &&
 		!(m.sel.chat && m.chatView.box.Empty()) // the chat gone from the screen: nothing of it to light
-	if len(under) == 1 && over == nil && !selecting {
+	promptAll := m.Input.all && len(m.Input.Text) > 0 && m.Popup == nil && !m.ShowHelp
+	if len(under) == 1 && over == nil && !selecting && !promptAll {
 		v.SetContent(drawBlock(base, w, h))
 		return v
 	}
@@ -194,6 +195,14 @@ func (m *Model) View() tea.View {
 			shift = m.chatView.box.Min.Y - m.chatTop()
 		}
 		m.sel.text = drawSelection(c, m.sel, m.sel.lit(m.Now), m.sel.out(m.Now), shift)
+	}
+	if promptAll { // its text past the "› ", in the box's rows; a shell command's "!" with it
+		x := 4
+		if bangInput(m.Input.Text) {
+			x = 2
+		}
+		b := image.Rect(x, ideH+chatH+1, w-2, ideH+chatH+2)
+		drawSelection(c, selection{box: b, from: b.Min, to: b.Max.Sub(image.Pt(1, 1))}, theme.SelBg, 0, 0)
 	}
 	if m.Popup != nil || m.ShowHelp {
 		drawDim(c)

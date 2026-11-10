@@ -740,11 +740,18 @@ func TestModelMouseSelectWheel(t *testing.T) {
 	}
 }
 
-// With the prompt empty, ctrl+a selects the whole conversation, lit where it shows, and copies it,
-// the lines scrolled off too; with text in the prompt, it goes to its start.
-func TestModelSelectAll(t *testing.T) {
+// modelSelectChat selects the whole conversation, as a drag over all of it would, and copies it.
+func modelSelectChat(m *Model) tea.Cmd {
+	b, n := m.chatView.box, len(m.chatText())
+	m.sel = selection{box: b, chat: true, drag: true, from: image.Pt(b.Min.X, 0), to: image.Pt(b.Max.X-1, n-1)}
+	return m.copySelection()
+}
+
+// The whole conversation selected is lit where it shows and copied whole, the lines scrolled off
+// too; a short chat is lit on the rows of its text, not the blanks over it.
+func TestModelMouseSelectWholeChat(t *testing.T) {
 	m := modelMouseLines(t, 60)
-	if cmd := m.handleKey(inputKey("ctrl+a")); cmd == nil {
+	if cmd := modelSelectChat(m); cmd == nil {
 		t.Fatal("nothing copied")
 	}
 	if got, want := m.selText(), modelMouseLinesText(0, 59); got != want {
@@ -760,30 +767,90 @@ func TestModelSelectAll(t *testing.T) {
 	m, _ = modelMouseNew(t)
 	m.Chat = []ChatEntry{{Kind: UserEntry, Text: "fix the bug"}, {Kind: AssistantEntry, Text: "done"}}
 	m.View()
-	m.handleKey(inputKey("ctrl+a"))
+	modelSelectChat(m)
 	if got := m.selText(); got != "fix the bug\ndone" {
 		t.Errorf("short chat: %q", got)
 	}
-	// A short chat sits above the prompt, its rows above it blank: the lines are lit where they are.
 	v := strings.Split(m.View().Content, "\n")
 	_, y = modelMouseAt(t, m, "fix the bug")
 	if !strings.Contains(v[y], lit) || strings.Contains(v[y-1], lit) {
 		t.Errorf("short chat lit on rows %d and %d: %v %v", y-1, y, strings.Contains(v[y-1], lit), strings.Contains(v[y], lit))
 	}
+}
 
-	m, _ = modelMouseNew(t)
+// ctrl+a selects the whole prompt, lit, and copies it, its pasted texts in place of their
+// placeholders; typing then replaces it, a key that deletes clears it (ctrl+y puts it back), a
+// paste goes in place of it, and another key acts as with nothing selected. An empty prompt has
+// nothing to select.
+func TestModelPromptSelectAll(t *testing.T) {
+	m, _ := modelMouseNew(t)
 	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "done"}}
-	modelPress(m, inputTyped("ab")...)
-	m.View()
-	if cmd := m.handleKey(inputKey("ctrl+a")); cmd != nil || m.sel.drag || m.Input.Cursor != 0 {
-		t.Errorf("with text: copy %v, selecting %v, cursor %d", cmd != nil, m.sel.drag, m.Input.Cursor)
+	if cmd := m.handleKey(inputKey("ctrl+a")); cmd != nil || m.Input.all {
+		t.Errorf("empty prompt: copy %v, selected %v", cmd != nil, m.Input.all)
+	}
+	m.paste(strings.Repeat("pasted line\n", 12))
+	modelPress(m, inputTyped(" fix it")...)
+	text := string(m.Input.Text)
+	if !strings.HasPrefix(text, "[Pasted text #") {
+		t.Fatalf("no placeholder: %q", text)
+	}
+	if got := m.pastedTexts(text); !strings.HasPrefix(got, "pasted line\npasted line") {
+		t.Fatalf("pasted texts: %q", got)
+	}
+	var copied string
+	defer func(w func(string) error) { writeClipboard = w }(writeClipboard)
+	writeClipboard = func(s string) error { copied = s; return nil }
+	cmd := m.handleKey(inputKey("ctrl+a"))
+	if cmd == nil || !m.Input.all {
+		t.Fatalf("copy %v, selected %v", cmd != nil, m.Input.all)
+	}
+	if cmd(); copied != m.pastedTexts(text) {
+		t.Errorf("copied %q", copied)
+	}
+	r, g, bl, _ := theme.SelBg.RGBA()
+	lit := fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, bl>>8)
+	v := m.View()
+	_, y := modelMouseAt(t, m, "fix it")
+	if rows := strings.Split(v.Content, "\n"); !strings.Contains(rows[y], lit) || !strings.Contains(ansi.Strip(v.Content), "copied to clipboard") {
+		t.Errorf("prompt lit %v, noted %v", strings.Contains(rows[y], lit), strings.Contains(ansi.Strip(v.Content), "copied to clipboard"))
 	}
 
-	// No conversation: nothing to select.
-	m, _ = modelMouseNew(t)
-	m.View()
-	if cmd := m.handleKey(inputKey("ctrl+a")); cmd != nil || m.sel.drag {
-		t.Errorf("empty chat: copy %v, selecting %v", cmd != nil, m.sel.drag)
+	modelPress(m, inputTyped("new")...)
+	if got := string(m.Input.Text); got != "new" || m.Input.all || m.Input.Cursor != 3 {
+		t.Errorf("typed over: %q cursor %d selected %v", got, m.Input.Cursor, m.Input.all)
+	}
+	if strings.Contains(m.View().Content, lit) {
+		t.Error("lit after typing")
+	}
+
+	for _, key := range []string{"backspace", "delete", "ctrl+u", "ctrl+k", "ctrl+w"} {
+		m.handleKey(inputKey("ctrl+a"))
+		m.handleKey(inputKey(key))
+		if len(m.Input.Text) != 0 || m.Input.all {
+			t.Errorf("%s: %q selected %v", key, string(m.Input.Text), m.Input.all)
+		}
+		modelPress(m, inputKeys("ctrl+y")...)
+		if got := string(m.Input.Text); got != "new" {
+			t.Errorf("%s then ctrl+y: %q", key, got)
+		}
+	}
+
+	m.Input = Input{Text: []rune("fresh"), Cursor: 5} // nothing killed yet
+	m.handleKey(inputKey("ctrl+a"))
+	m.Update(tea.PasteMsg{Content: "pasted"})
+	if got := string(m.Input.Text); got != "pasted" || m.Input.all {
+		t.Errorf("paste: %q selected %v", got, m.Input.all)
+	}
+	m.handleKey(inputKey("ctrl+y"))
+	if got := string(m.Input.Text); got != "pastedfresh" {
+		t.Errorf("paste then ctrl+y: %q", got)
+	}
+	m.Input = Input{Text: []rune("pasted"), Cursor: 6}
+
+	m.handleKey(inputKey("ctrl+a"))
+	m.handleKey(inputKey("left"))
+	if got := string(m.Input.Text); got != "pasted" || m.Input.all || m.Input.Cursor != 5 {
+		t.Errorf("left: %q cursor %d selected %v", got, m.Input.Cursor, m.Input.all)
 	}
 }
 
@@ -938,13 +1005,13 @@ func TestModelMouseSelectShortChat(t *testing.T) {
 	}
 }
 
-// ctrl+a copies a prompt that wraps a row per row, without its time.
-func TestModelSelectAllWrapped(t *testing.T) {
+// The whole conversation copies a prompt that wraps a row per row, without its time.
+func TestModelMouseSelectWrapped(t *testing.T) {
 	m, _ := modelMouseNew(t)
 	long := strings.Repeat("word ", 30)
 	m.Chat = []ChatEntry{{Kind: UserEntry, Text: long, At: modelT0}}
 	m.View()
-	m.handleKey(inputKey("ctrl+a"))
+	modelSelectChat(m)
 	got := m.selText()
 	if rows := strings.Split(got, "\n"); len(rows) < 2 || strings.Contains(got, modelT0.Format("15:04")) ||
 		strings.Join(strings.Fields(got), " ") != strings.TrimSpace(long) {
@@ -1019,11 +1086,11 @@ func TestModelMouseSelectLowered(t *testing.T) {
 }
 
 // A line's blanks after its text stay out of the copy: a code block pads its lines.
-func TestModelSelectAllTrims(t *testing.T) {
+func TestModelMouseSelectTrims(t *testing.T) {
 	m, _ := modelMouseNew(t)
 	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "```\nx := 1\nlonger := 2\n```"}}
 	m.View()
-	m.handleKey(inputKey("ctrl+a"))
+	modelSelectChat(m)
 	for _, row := range strings.Split(m.selText(), "\n") {
 		if strings.HasSuffix(row, " ") {
 			t.Errorf("%q ends in blanks", row)
@@ -1033,9 +1100,9 @@ func TestModelSelectAllTrims(t *testing.T) {
 
 // The window raised with the whole conversation selected, the chat takes more rows: it is lit on
 // every one of them.
-func TestModelSelectAllRaised(t *testing.T) {
+func TestModelMouseSelectRaised(t *testing.T) {
 	m := modelMouseLines(t, 60)
-	m.handleKey(inputKey("ctrl+a"))
+	modelSelectChat(m)
 	before := m.chatView.box
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
 	rows := strings.Split(m.View().Content, "\n")
@@ -1082,5 +1149,98 @@ func TestModelMouseSelectUnderCompletions(t *testing.T) {
 	m.View()
 	if _, cmd := m.Update(selScrollMsg{}); cmd != nil || m.ChatScroll != 20 {
 		t.Errorf("scroll goes on %v, scrolled %d", cmd != nil, m.ChatScroll)
+	}
+}
+
+// Every key that deletes clears the whole prompt selected, wherever the cursor is, and ctrl+y puts
+// it back; typing clears it the same way.
+func TestModelPromptSelectAllKeys(t *testing.T) {
+	for _, key := range []string{"backspace", "ctrl+h", "delete", "ctrl+d", "ctrl+u", "super+backspace", "ctrl+k", "ctrl+w", "alt+backspace", "alt+d", "x"} {
+		m, _ := modelMouseNew(t)
+		modelPress(m, inputTyped("one two three")...)
+		modelPress(m, inputKeys("left left left left left left left")...) // mid "two"
+		m.handleKey(inputKey("ctrl+a"))
+		m.handleKey(inputKey(key))
+		want := ""
+		if key == "x" {
+			want = "x"
+		}
+		if got := string(m.Input.Text); got != want || m.Input.all {
+			t.Errorf("%s: %q selected %v", key, got, m.Input.all)
+		}
+		m.handleKey(inputKey("ctrl+y"))
+		if got := string(m.Input.Text); got != want+"one two three" {
+			t.Errorf("%s then ctrl+y: %q", key, got)
+		}
+	}
+}
+
+// The selected prompt is lit from its text on, the "›" out; a shell command's "!" is lit with it,
+// as it is copied. Under a popup or the help nothing is lit.
+func TestModelPromptSelectAllLit(t *testing.T) {
+	r, g, bl, _ := theme.SelBg.RGBA()
+	lit := fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, bl>>8)
+	for _, c := range []struct{ text, first string }{{"fix it", "f"}, {"!ls -la", "!"}} {
+		m, _ := modelMouseNew(t)
+		modelPress(m, inputTyped(c.text)...)
+		m.handleKey(inputKey("ctrl+a"))
+		_, y := modelMouseAt(t, m, c.text[1:])
+		row := strings.Split(m.View().Content, "\n")[y]
+		at := strings.Index(row, lit)
+		if at < 0 || !strings.HasPrefix(ansi.Strip(row[at+len(lit)+1:]), c.first) { // past the "m" of the colour
+			t.Errorf("%q: the lit part starts %q", c.text, ansi.Strip(row[max(at, 0):]))
+		}
+	}
+
+	// Under the help or a popup the prompt shows as with nothing selected.
+	m, _ := modelMouseNew(t)
+	modelPress(m, inputTyped("fix it")...)
+	m.handleKey(inputKey("ctrl+a"))
+	m.sel = selection{} // no note of the copy: only the prompt differs
+	under := func(name string) {
+		selected := m.View().Content
+		m.Input.all = false
+		if plain := m.View().Content; selected != plain {
+			t.Errorf("lit under %s", name)
+		}
+		m.Input.all = true
+	}
+	m.ShowHelp = true
+	under("the help")
+	m.ShowHelp = false
+	modelEvents(m, protocol.PermissionRequest{RequestID: "p", ToolName: "Bash", Input: map[string]any{"command": "ls"}})
+	under("a popup")
+}
+
+// A key or a click elsewhere drops the selection: typing then goes on after the text. A picture
+// pasted goes with the text, never in place of it.
+func TestModelPromptSelectAllDropped(t *testing.T) {
+	for _, step := range []struct {
+		name string
+		do   func(m *Model)
+	}{
+		{"f1", func(m *Model) { m.handleKey(inputKey("f1")) }},
+		{"alt+z", func(m *Model) { m.handleKey(inputKey("alt+z")) }},
+		{"click", func(m *Model) {
+			m.Update(tea.MouseClickMsg{X: 10, Y: 2, Button: tea.MouseLeft})
+			m.Update(tea.MouseReleaseMsg{X: 10, Y: 2, Button: tea.MouseLeft})
+		}},
+	} {
+		m, _ := modelMouseNew(t)
+		modelPress(m, inputTyped("keep")...)
+		m.handleKey(inputKey("ctrl+a"))
+		step.do(m)
+		modelPress(m, inputTyped("x")...)
+		if got := string(m.Input.Text); got != "keepx" {
+			t.Errorf("%s: %q", step.name, got)
+		}
+	}
+
+	m, _ := modelMouseNew(t)
+	modelPress(m, inputTyped("keep")...)
+	m.handleKey(inputKey("ctrl+a"))
+	m.pasted(imagesMsg{images: []protocol.Image{{Media: "image/png", Data: []byte{0}}}})
+	if got := string(m.Input.Text); !strings.HasPrefix(got, "keep[Image #") || m.Input.all {
+		t.Errorf("picture: %q selected %v", got, m.Input.all)
 	}
 }

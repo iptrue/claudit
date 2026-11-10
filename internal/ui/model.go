@@ -303,6 +303,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.interact()
 			m.mouseDown = true
 			m.onDrag = nil
+			m.Input.all = false
 			m.sel = m.selectAt(msg.X, msg.Y)
 			cmd = m.click(msg.X, msg.Y)
 		}
@@ -758,6 +759,8 @@ func (m *Model) working(state string) {
 }
 
 func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
+	all := m.Input.all
+	m.Input.all = false // a key drops the selection of the whole prompt; ctrl+a, typing and deleting act on it
 	if k.String() == "ctrl+c" {
 		if _, ok := m.Popup.(*QuitPopup); ok {
 			m.cancelQuit()
@@ -828,6 +831,9 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 			m.histAt = len(m.history) // an edit ends browsing the history
 		}
 	}()
+	if all && m.Input.takeAll(k) {
+		return nil
+	}
 	switch k.String() {
 	case "enter":
 		if c := m.Input.Cursor; c > 0 && m.Input.Text[c-1] == '\\' { // "\" + enter: a new line
@@ -871,11 +877,13 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		default: // nothing left to cancel
 			return m.quitTwice("esc")
 		}
-	case "ctrl+a":
-		if len(m.Input.Text) == 0 { // nothing to go to the start of: the whole conversation
-			return m.selectChat()
+	case "ctrl+a": // the whole prompt, selected and copied; home goes to its start
+		if len(m.Input.Text) == 0 {
+			return nil
 		}
-		m.Input.edit(k)
+		m.Input.all = true
+		m.sel = selection{released: m.clock()} // nothing to light in the chat: the status line notes the copy
+		return copyText(m.pastedTexts(string(m.Input.Text)))
 	case "pgup":
 		m.scrollChat(10)
 	case "pgdown":
