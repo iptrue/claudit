@@ -145,6 +145,9 @@ func TestModelHistoryLost(t *testing.T) {
 	if e := m.history[len(m.history)-1]; e.Pasted != nil {
 		t.Errorf("a lost placeholder kept: %+v", e)
 	}
+	if a := m.attached["[Pasted text #4 +1 lines]"]; a.text != "[Pasted text #4 +1 lines]" {
+		t.Errorf("a lost placeholder stands for %q", a.text)
+	}
 }
 
 // A picture of this session's prompt is the one it had.

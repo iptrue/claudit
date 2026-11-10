@@ -42,7 +42,7 @@ var (
 type attachment struct {
 	text  string
 	image *protocol.Image
-	lost  bool // an earlier session's, which the history did not keep: the placeholder goes as it is
+	lost  bool // an earlier session's, which the history did not keep: its text is the placeholder itself
 }
 
 // imagesMsg brings pictures read off the UI's way, for the prompt.
@@ -74,7 +74,7 @@ func (m *Model) message(text string) protocol.UserMessage {
 	msg.Text = placeholderRe.ReplaceAllStringFunc(text, func(p string) string {
 		a, ok := m.attached[p]
 		switch {
-		case !ok || a.lost: // typed, from a resumed conversation, or lost
+		case !ok: // typed, or from a resumed conversation
 			return p
 		case a.image != nil:
 			msg.Images = append(msg.Images, *a.image)
@@ -271,13 +271,14 @@ func (m *Model) recalled(e history.Entry, earlier bool) string {
 	})
 }
 
-// lose is placeholder p under a number of its own, standing for nothing: what p stood for in an
-// earlier session is lost.
+// lose is placeholder p under a number of its own, standing for itself: what p stood for in an
+// earlier session is lost, and whatever puts pasted texts in place of their placeholders leaves it
+// as it is.
 func (m *Model) lose(p string) string {
 	i := strings.Index(p, "#") + 1
 	j := i + strings.IndexFunc(p[i:], func(r rune) bool { return r < '0' || r > '9' })
 	lost := p[:i] + strconv.Itoa(len(m.attached)+1) + p[j:]
-	m.attached[lost] = attachment{lost: true}
+	m.attached[lost] = attachment{text: lost, lost: true}
 	return lost
 }
 
