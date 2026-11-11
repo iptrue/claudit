@@ -57,6 +57,7 @@ func (m *Model) View() tea.View {
 	}
 
 	entries := m.chatEntries()
+	m.chatLines.paths = m.paths // the paths its entries name underline
 	ideH, chatH := drawLayout(h, drawChatCount(&m.chatLines, entries, w))
 	if m.inspection != nil && h >= drawIDEH {
 		if m.inspection.height < 0 {
@@ -137,6 +138,7 @@ func (m *Model) View() tea.View {
 				return m.clickChat(call, bang, o, w, ideH)
 			},
 			text: func(int, int) image.Rectangle { return image.Rect(2+chatTextCol, 0, 2+tw, chatH) }})
+		m.zones = append(m.zones, m.pathZone(m.zones[len(m.zones)-1], entries, w, chatH)) // the paths in it open at a click
 	}
 	in, cx := renderInput(&m.Input, w-4, "Ask claude…", m.PanelFocus)
 	var parts []string
