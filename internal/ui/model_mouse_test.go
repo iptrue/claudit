@@ -1376,3 +1376,262 @@ func TestModelPromptSelectAllDropped(t *testing.T) {
 		t.Errorf("picture: %q selected %v", got, m.Input.all)
 	}
 }
+
+// modelCopied runs what a release starts and returns what it put on the clipboard, "" for nothing.
+func modelCopied(t *testing.T, cmd tea.Cmd) string {
+	t.Helper()
+	var copied string
+	defer func(w func(string) error) { writeClipboard = w }(writeClipboard)
+	writeClipboard = func(s string) error { copied = s; return nil }
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		if batch, ok := c().(tea.BatchMsg); ok {
+			for _, c := range batch {
+				run(c)
+			}
+		}
+	}
+	run(cmd)
+	return copied
+}
+
+// modelCodeDraft is a reply whose block of code holds a draft longer than a row of the chat 100
+// cells wide, a short line after it, and a block of a ! command.
+const modelCodeDraft = "Коллеги, привет!  Черновик   длинный, перенос   по словам, и строка не теряет ни   одного пробела до конца"
+
+func modelCodeNew(t *testing.T) *Model {
+	t.Helper()
+	m, _ := modelMouseNew(t)
+	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "Черновик:\n```text\n" + modelCodeDraft + "\n    вторая строка\n```\nи вход:\n```\n! make login\n```"}}
+	m.View()
+	return m
+}
+
+// A click on a row of a block of code copies what it holds as written, a wrapped line whole and
+// without the bar, lit and noted as a copied selection is; a click elsewhere in the reply copies
+// nothing, a drag copies what it covers, and a ! command's block still puts the command in the
+// prompt.
+func TestModelMouseClickCode(t *testing.T) {
+	want := modelCodeDraft + "\n    вторая строка"
+	for _, at := range []string{"вторая строка", "Коллеги", "до конца"} {
+		m := modelCodeNew(t)
+		x, y := modelMouseAt(t, m, at)
+		m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		_, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+		if got := modelCopied(t, cmd); got != want {
+			t.Errorf("a click on %q copied %q", at, got)
+		}
+		r, g, bl, _ := selFlashBg.RGBA()
+		lit := fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, bl>>8)
+		v := m.View().Content
+		rows := strings.Split(v, "\n")
+		_, top := modelMouseAt(t, m, "Коллеги")
+		_, last := modelMouseAt(t, m, "вторая строка")
+		_, over := modelMouseAt(t, m, "Черновик:")
+		_, under := modelMouseAt(t, m, "и вход:")
+		if !strings.Contains(rows[top], lit) || !strings.Contains(rows[last], lit) || strings.Contains(rows[over], lit) || strings.Contains(rows[under], lit) ||
+			!strings.Contains(ansi.Strip(v), drawNoted) {
+			t.Errorf("a click on %q: lit %v %v %v %v, noted %v", at, strings.Contains(rows[over], lit), strings.Contains(rows[top], lit),
+				strings.Contains(rows[last], lit), strings.Contains(rows[under], lit), strings.Contains(ansi.Strip(v), drawNoted))
+		}
+	}
+
+	m := modelCodeNew(t)
+	x, y := modelMouseAt(t, m, "Черновик:")
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if _, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft}); modelCopied(t, cmd) != "" {
+		t.Error("a click on the prose copied")
+	}
+
+	x, y = modelMouseAt(t, m, "вторая строка")
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: x + 5, Y: y, Button: tea.MouseLeft})
+	m.View()
+	if _, cmd := m.Update(tea.MouseReleaseMsg{X: x + 5, Y: y, Button: tea.MouseLeft}); modelCopied(t, cmd) != "вторая" {
+		t.Errorf("a drag copied %q", m.selText())
+	}
+
+	modelMouseClick(t, m, "make login")
+	if got := string(m.Input.Text); got != "!make login" {
+		t.Errorf("the ! block put %q", got)
+	}
+	x, y = modelMouseAt(t, m, "make login")
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if _, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft}); modelCopied(t, cmd) != "" {
+		t.Error("a click on the ! block copied it")
+	}
+	m.Input = Input{}
+	for _, x := range []int{0, 3, 98} { // beside its text, before the bar and at the right
+		m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		if _, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft}); modelCopied(t, cmd) != "" {
+			t.Errorf("a click at %d beside the ! block copied it", x)
+		}
+	}
+}
+
+// A drag over rows of a block of code copies them without the bar, a line that wraps joined
+// whole again; from the bar's cells, a row whole; from within a row, from there; over the reply
+// and the block, the reply's lines as they are, and so does ctrl+a.
+func TestModelMouseSelectCode(t *testing.T) {
+	m := modelCodeNew(t)
+	x0, y0 := modelMouseAt(t, m, "Коллеги")
+	x1, y1 := modelMouseAt(t, m, "вторая строка")
+	drag := func(fx, fy, tx, ty int) string {
+		m.Update(tea.MouseClickMsg{X: fx, Y: fy, Button: tea.MouseLeft})
+		m.Update(tea.MouseMotionMsg{X: tx, Y: ty, Button: tea.MouseLeft})
+		m.View()
+		got := m.selText()
+		m.Update(tea.MouseReleaseMsg{X: tx, Y: ty, Button: tea.MouseLeft})
+		return got
+	}
+	end := x1 + len([]rune("вторая строка")) - 1
+	if y1-y0 < 2 {
+		t.Fatalf("the draft takes rows %d to %d: it does not wrap", y0, y1)
+	}
+	if got := drag(x0-2, y0, end, y1); got != modelCodeDraft+"\n    вторая строка" {
+		t.Errorf("from the bar: %q", got)
+	}
+	if got := drag(x0+len([]rune("Коллеги, ")), y0, end, y1); got != "привет!  Черновик   длинный, перенос   по словам, и строка не теряет ни   одного пробела до конца\n    вторая строка" {
+		t.Errorf("from within: %q", got)
+	}
+	shown := func(y int) string { // the text of row y of the block, past its bar
+		row := ansi.Strip(strings.Split(m.View().Content, "\n")[y])
+		return strings.TrimRight(row[strings.Index(row, "│ ")+len("│ "):], " ")
+	}
+	_, y := modelMouseAt(t, m, "до конца")
+	if got := drag(x0-2, y, 99, y); got != shown(y) || got == "" || strings.HasPrefix(got, " ") {
+		t.Errorf("a row the line wraps to, alone: %q, it shows %q", got, shown(y))
+	}
+	if got := drag(x0, y0, x0-2, y0+1); got != shown(y0) || strings.HasSuffix(got, " ") {
+		t.Errorf("up to the bar of the row the line wraps to: %q, the first row shows %q", got, shown(y0))
+	}
+	_, over := modelMouseAt(t, m, "Черновик:")
+	if got := drag(m.chatView.box.Min.X, over, 99, y1); got != "Черновик:\n"+modelCodeDraft+"\n    вторая строка" {
+		t.Errorf("with the prose: %q", got)
+	}
+	modelSelectChat(m)
+	if got := m.selText(); got != "Черновик:\n"+modelCodeDraft+"\n    вторая строка\nи вход:\n! make login" {
+		t.Errorf("ctrl+a: %q", got)
+	}
+}
+
+// modelMouseHas reports whether text is on the screen as m draws it.
+func modelMouseHas(m *Model, text string) bool {
+	return strings.Contains(ansi.Strip(m.View().Content), text)
+}
+
+// modelMouseLineOf is the line of the conversation that says text, -1 for none.
+func modelMouseLineOf(m *Model, text string) int {
+	return slices.IndexFunc(m.chatText(), func(l string) bool { return strings.Contains(ansi.Strip(l), text) })
+}
+
+// A block of code in a long conversation, scrolled to show only its end, is copied whole and lit
+// on its own lines, whatever the width.
+func TestModelMouseClickCodeScrolled(t *testing.T) {
+	m := modelMouseLines(t, 60)
+	m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, Text: "```\nb1\nb2\nb3\nb4\nb5\nb6\n```"})
+	for i := range 20 {
+		m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry, Text: fmt.Sprintf("after %02d", i)})
+	}
+	for _, w := range []int{100, 60} {
+		m.Update(tea.WindowSizeMsg{Width: w, Height: 30})
+		m.ChatScroll = 0
+		for i := 0; i < 80 && !(modelMouseHas(m, "b4") && !modelMouseHas(m, "b1")); i++ {
+			m.scrollChat(1)
+		}
+		if !modelMouseHas(m, "b4") || modelMouseHas(m, "b1") {
+			t.Fatalf("width %d: no scroll shows b4 without b1", w)
+		}
+		x, y := modelMouseAt(t, m, "b4")
+		m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		_, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+		if got := modelCopied(t, cmd); got != "b1\nb2\nb3\nb4\nb5\nb6" {
+			t.Errorf("width %d: copied %q", w, got)
+		}
+		from, to := m.sel.ends()
+		if b1, b6 := modelMouseLineOf(m, "b1"), modelMouseLineOf(m, "b6"); from.Y != b1 || to.Y != b6 {
+			t.Errorf("width %d: lit lines %d to %d, the block is on %d to %d", w, from.Y, to.Y, b1, b6)
+		}
+		m.sel = selection{}
+	}
+}
+
+// A block of code still streaming copies what it holds as the button lets go, the lines that came
+// in after the press too, and is lit on all of them.
+func TestModelMouseClickCodeStreaming(t *testing.T) {
+	m, _ := modelMouseNew(t)
+	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "```\necho 1\necho 2"}}
+	x, y := modelMouseAt(t, m, "echo 1")
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	m.Chat[0].Text += "\necho 3\n```\ndone"
+	m.View()
+	_, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if got := modelCopied(t, cmd); got != "echo 1\necho 2\necho 3" {
+		t.Errorf("copied %q", got)
+	}
+	if from, to := m.sel.ends(); to.Y-from.Y != 2 {
+		t.Errorf("lit lines %d to %d", from.Y, to.Y)
+	}
+}
+
+// A click copies a block's tabs and blanks at a line's end as written; a drag takes what the chat
+// shows, a tab as the blanks it is drawn as, and no blanks at a row's end.
+func TestModelMouseClickCodeAsWritten(t *testing.T) {
+	m, _ := modelMouseNew(t)
+	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "```make\nall:\n\tgo build ./...   \n```"}}
+	x, y := modelMouseAt(t, m, "all:")
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	_, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if got := modelCopied(t, cmd); got != "all:\n\tgo build ./...   " {
+		t.Errorf("a click copied %q", got)
+	}
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: 90, Y: y + 1, Button: tea.MouseLeft})
+	m.View()
+	if got := m.selText(); got != "all:\n    go build ./..." {
+		t.Errorf("a drag took %q", got)
+	}
+}
+
+// Between the press on a block of code and the release, the window narrowed or an entry above
+// grown, the block pressed is copied and lit where it is drawn then; one become a ! command's is
+// not copied.
+func TestModelMouseClickCodeMoved(t *testing.T) {
+	press := func(m *Model, text string) (x, y int) {
+		x, y = modelMouseAt(t, m, text)
+		m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		return x, y
+	}
+	release := func(m *Model, x, y int, want, first, last string) {
+		t.Helper()
+		m.View()
+		_, cmd := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+		if got := modelCopied(t, cmd); got != want {
+			t.Errorf("copied %q, want %q", got, want)
+		}
+		if from, to := m.sel.ends(); want != "" && (from.Y != modelMouseLineOf(m, first) || to.Y != modelMouseLineOf(m, last)) {
+			t.Errorf("lit lines %d to %d, the block is on %d to %d", from.Y, to.Y, modelMouseLineOf(m, first), modelMouseLineOf(m, last))
+		}
+	}
+
+	m, _ := modelMouseNew(t)
+	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "```\n" + strings.TrimSpace(strings.Repeat("word ", 30)) + "\n```\nmid\n```\nB1\nB2\n```"}}
+	x, y := press(m, "B1")
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 30})
+	release(m, x, y, "B1\nB2", "B1", "B2")
+
+	m, _ = modelMouseNew(t)
+	m.Chat = []ChatEntry{{Kind: CommandEntry, Bang: "ls"}, {Kind: AssistantEntry, Text: "```\na1\na2\n```"}}
+	x, y = press(m, "a1")
+	m.Chat[0].Text = "one\ntwo\nthree\nfour"
+	release(m, x, y, "a1\na2", "a1", "a2")
+
+	m, _ = modelMouseNew(t)
+	m.Chat = []ChatEntry{{Kind: AssistantEntry, Text: "```\n!"}}
+	x, y = press(m, "!")
+	m.Chat[0].Text += "ls -la\n```"
+	release(m, x, y, "", "", "")
+}

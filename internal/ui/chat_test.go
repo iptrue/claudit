@@ -694,3 +694,97 @@ func TestDrawMarkdownCodeWraps(t *testing.T) {
 		t.Errorf("w 4: %q", lines)
 	}
 }
+
+// chatCodeJoined is a block of code taken back from its rows as drawn: past the bar, the blanks
+// the wrap left out before each part, a part that goes on with its line joined to it.
+func chatCodeJoined(lines []string, b drawCodeBlock) string {
+	var rows []string
+	for k, r := range b.rows {
+		part, ok := strings.CutPrefix(ansi.Strip(lines[b.from+k]), "│ ")
+		if !ok {
+			return "no bar on " + lines[b.from+k]
+		}
+		part = r.lead + strings.TrimRight(part, " ")
+		if r.cont && len(rows) > 0 {
+			rows[len(rows)-1] += part
+			continue
+		}
+		rows = append(rows, part)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// A block of code is found where it is drawn, a row of its bar each, with what it holds as
+// written; a line of it that wraps comes back whole from its rows, its indent and the blanks
+// where it broke too. A reply drops its blank lines, not a block's: it keeps the block on its rows; a "! command"
+// block is one, and too narrow to wrap, each line one row.
+func TestChatMarkdownCode(t *testing.T) {
+	draft := "Коллеги, привет!  Черновик   длинный, перенос   по словам и   без потерь"
+	block := draft + "\n        indented words that wrap here too\n\nshort"
+	src := "Send this:\n\n```text\n\n" + block + "\n\n```\nthen `x` and\n```\n! make login\n```"
+	for _, w := range []int{24, 3, 80} {
+		lines, _, code := drawMarkdownCode(src, w, true)
+		if len(code) != 2 {
+			t.Fatalf("w %d: blocks %+v", w, code)
+		}
+		if b := code[0]; b.text != block || b.to-b.from != len(b.rows) || chatCodeJoined(lines, b) != "\n"+block+"\n" && w > 3 {
+			t.Errorf("w %d: %q from %d to %d, rows give %q\n%s", w, b.text, b.from, b.to, chatCodeJoined(lines, b), ansi.Strip(strings.Join(lines, "\n")))
+		}
+		if b := code[1]; b.text != "! make login" || w > 3 && !strings.Contains(ansi.Strip(lines[b.from]), "make") {
+			t.Errorf("w %d: the ! block %+v", w, b)
+		}
+		if w == 3 && slices.ContainsFunc(code[0].rows, func(r drawCodeRow) bool { return r.cont || r.lead != "" }) {
+			t.Errorf("too narrow, a row goes on: %+v", code[0].rows)
+		}
+		if w == 24 && !slices.ContainsFunc(code[0].rows, func(r drawCodeRow) bool { return r.cont }) {
+			t.Errorf("nothing wrapped: %+v", code[0].rows)
+		}
+
+		dense, _, code := drawReplyCode(src, w)
+		b := code[0]
+		if b.text != block || w > 3 && chatCodeJoined(dense, b) != "\n"+block+"\n" { // the blank lines in it are rows of its bar
+			t.Errorf("w %d: a reply's block from %d to %d gives %q", w, b.from, b.to, chatCodeJoined(dense, b))
+		}
+		if b.from == 0 || strings.Contains(ansi.Strip(dense[b.from-1]), "│") || b.to < len(dense) && strings.HasPrefix(ansi.Strip(dense[b.to]), "│") {
+			t.Errorf("w %d: the block is not on rows %d to %d", w, b.from, b.to)
+		}
+	}
+	if _, code := drawEntryBlocks(ChatEntry{Kind: AssistantEntry, Text: src, Bash: true}, 40); code != nil {
+		t.Errorf("a Bash line has blocks: %+v", code)
+	}
+	if _, code := drawEntryBlocks(ChatEntry{Kind: UserEntry, Text: src}, 40); code != nil {
+		t.Errorf("a prompt has blocks: %+v", code)
+	}
+}
+
+// What a block of code holds is its lines as written, indent kept, the blank ones around them
+// trimmed; escape sequences, controls and the characters that reorder what is written go, a tab
+// stays.
+func TestChatFenceText(t *testing.T) {
+	got := drawFenceText([]string{"", "  ", "  x\r", "\x1b[31my\x1b[0m‮\t​z", "", "w", " ", ""})
+	if want := "  x\ny\tz\n\nw"; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+	if got := drawFenceText([]string{"", " "}); got != "" {
+		t.Errorf("blank: %q", got)
+	}
+}
+
+// The blanks a wrap left out are found before each part, and none for a part that is not as
+// written.
+func TestChatCodeLeads(t *testing.T) {
+	for _, c := range []struct {
+		line  string
+		parts []string
+		want  []string
+	}{
+		{"a  b   c", []string{"a", "b", "c"}, []string{"", "  ", "   "}},
+		{"    deep words", []string{"", "deep", "words"}, []string{"", "    ", " "}},
+		{"a b", []string{"a", "zz"}, []string{"", ""}},
+		{"a x b", []string{"a", "b"}, []string{"", ""}}, // what is between is not blank
+	} {
+		if got := drawCodeLeads(c.line, c.parts); !slices.Equal(got, c.want) {
+			t.Errorf("%q in %q: %q, want %q", c.line, c.parts, got, c.want)
+		}
+	}
+}

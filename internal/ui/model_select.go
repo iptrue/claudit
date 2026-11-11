@@ -3,6 +3,7 @@ package ui
 import (
 	"image"
 	"image/color"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type selection struct {
 	mouse    image.Point     // where the mouse is on screen
 	drag     bool            // the mouse moved with the button down: there is something to copy
 	text     string          // what it covers, as the last frame drew it; the chat's is read from its lines
+	block    string          // what a block of code clicked holds, as written: what it copies instead
 	released time.Time       // when the button let go and what it covers was copied
 }
 
@@ -31,8 +33,17 @@ type chatView struct {
 	entries []ChatEntry     // what it drew, tw cells wide, kept in cache
 	tw      int
 	cache   *chatCache
-	lines   []string // every line of the conversation, styled, from the first: drawn when asked
+	lines   []string      // every line of the conversation, styled, from the first: drawn when asked
+	code    []chatCodeRow // beside each, where it is a row of a block of code
+	owners  []int         // beside each, the index of the entry it draws; -1 for none
 	drawn   bool
+}
+
+// chatCodeRow is a line of the conversation that a block of code of a reply's drew: past the
+// arrow and the bar, a part of a line of the block.
+type chatCodeRow struct {
+	drawCodeRow
+	ok bool // it is one
 }
 
 // chatText is every line of the conversation as the last frame drew the chat, styled, from the
@@ -40,10 +51,58 @@ type chatView struct {
 func (m *Model) chatText() []string {
 	v := &m.chatView
 	if !v.drawn && !v.box.Empty() {
-		v.lines, _, _ = drawChatLines(v.cache, v.entries, v.tw, 0)
-		v.drawn = true
+		v.lines, _, v.owners = drawChatLines(v.cache, v.entries, v.tw, 0)
+		owners := v.owners
+		v.code, v.drawn = make([]chatCodeRow, len(v.lines)), true
+		for k, first := 0, 0; k < len(owners); k++ {
+			if k == 0 || owners[k] != owners[k-1] {
+				first = k // the entry's first line
+			}
+			for _, b := range v.cache.codeOf(owners[k]) {
+				if j := k - first; j >= b.from && j < b.to {
+					v.code[k] = chatCodeRow{drawCodeRow: b.rows[j-b.from], ok: true}
+				}
+			}
+		}
 	}
 	return v.lines
+}
+
+// chatBlock is a block of code of a reply's in the conversation: the block-th of entry. Neither
+// changes as the chat is drawn again, another width or more of a reply streamed.
+type chatBlock struct {
+	entry, block int
+}
+
+// chatBlockAt is the block of code that line r.line of entry r.entry is a row of; false for
+// none, and for a block of a "! command", whose click puts it in the prompt.
+func (m *Model) chatBlockAt(r chatRow) (chatBlock, bool) {
+	if m.chatView.cache == nil {
+		return chatBlock{}, false
+	}
+	for i, b := range m.chatView.cache.codeOf(r.entry) {
+		if r.line >= b.from && r.line < b.to && !b.bang {
+			return chatBlock{entry: r.entry, block: i}, true
+		}
+	}
+	return chatBlock{}, false
+}
+
+// copyBlock selects the lines of block c as the chat draws it now, as a drag over them would, to
+// copy what it holds as written as the button lets go: a block still streaming has more of it
+// than at the press, and a block become a "! command" is not copied.
+func (m *Model) copyBlock(c chatBlock) {
+	lines := m.chatText() // it finds the entries' lines
+	if m.chatView.cache == nil || len(lines) == 0 {
+		return
+	}
+	code, first := m.chatView.cache.codeOf(c.entry), slices.Index(m.chatView.owners, c.entry)
+	if c.block >= len(code) || code[c.block].bang || first < 0 {
+		return
+	}
+	b, box := code[c.block], m.chatView.box
+	m.sel = selection{box: box, chat: true, drag: true, mouse: m.sel.mouse,
+		from: image.Pt(box.Min.X, first+b.from), to: image.Pt(box.Max.X-1, first+b.to-1), block: b.text}
 }
 
 // selScrollFrame is how often a drag held past the top or bottom of the chat scrolls it, and
@@ -53,8 +112,12 @@ const (
 	selScrollMax   = 10
 )
 
-// chatTextCol is the column of a chat line where its text a drag selects starts: past the "› ".
-const chatTextCol = 2
+// chatTextCol is the column of a chat line where its text a drag selects starts: past the "› ";
+// chatCodeCol where the text of a row of a block of code starts, past its bar too.
+const (
+	chatTextCol = 2
+	chatCodeCol = chatTextCol + 2
+)
 
 // selScrollMsg scrolls the chat a frame's worth under a drag held past its edge.
 type selScrollMsg struct{}
@@ -212,20 +275,41 @@ func (m *Model) selectChat() tea.Cmd {
 }
 
 // selText is what the selection covers: in the chat, the text of every line it spans, on screen
-// or not, past the arrows and short of the times; elsewhere what the last frame drew. Under a
-// popup or the help nothing shows it: it covers nothing.
+// or not, past the arrows and short of the times, and a block of code's past its bar, a line of
+// it whole as written however it wraps; elsewhere what the last frame drew. Under a popup or the
+// help nothing shows it: it covers nothing. A block of code clicked copies what it holds.
 func (m *Model) selText() string {
 	s := m.sel
+	if s.block != "" {
+		return s.block
+	}
 	if !s.chat || !s.drag || m.Popup != nil || m.ShowHelp { // a click is no selection: the frame drew none
 		return s.text
 	}
 	from, to := s.ends()
-	lines := m.chatText()
+	lines := m.chatText() // it draws the code beside them
+	code := m.chatView.code
 	var rows []string
 	for y := max(from.Y, 0); y <= min(to.Y, len(lines)-1); y++ { // from the blank rows over a short chat, its first line whole
 		x0, x1 := s.span(y)
 		x0, x1 = x0-s.box.Min.X+chatTextCol, x1-s.box.Min.X+chatTextCol // the line starts 2 cells into the row
-		rows = append(rows, strings.TrimRight(selCut(lines[y], x0, x1), " "))
+		c := code[y]
+		if !c.ok {
+			rows = append(rows, strings.TrimRight(selCut(lines[y], x0, x1), " "))
+			continue
+		}
+		row := strings.TrimRight(selCut(lines[y], max(x0, chatCodeCol), x1), " ")
+		joins := c.cont && len(rows) > 0
+		// From the row's start, its line's first or joined to the rows before: with the blanks
+		// the wrap left out there, if any of it is taken.
+		if x0 <= chatCodeCol && (joins || !c.cont) && row != "" {
+			row = c.lead + row
+		}
+		if joins {
+			rows[len(rows)-1] += row
+			continue
+		}
+		rows = append(rows, row)
 	}
 	return strings.Join(rows, "\n")
 }

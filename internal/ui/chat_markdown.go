@@ -52,6 +52,30 @@ func drawMarkdownBangs(src string, w int) (out []string, hits []drawBangHit) {
 // drawMarkdownAs is drawMarkdownBangs, or drawMarkdown when bangs is false: a place where a click
 // puts nothing in the prompt shows a "! command" as code, not pink.
 func drawMarkdownAs(src string, w int, bangs bool) (out []string, hits []drawBangHit) {
+	out, hits, _ = drawMarkdownCode(src, w, bangs)
+	return out, hits
+}
+
+// drawCodeBlock is a fenced block of code as drawn: lines from to to (past its last) of what
+// drawMarkdown drew, a row of rows each; text is what it holds, as written, for a click to copy.
+// A block of a "! command" has a click of its own, where it puts the command in the prompt.
+type drawCodeBlock struct {
+	from, to int
+	text     string
+	rows     []drawCodeRow
+	bang     bool
+}
+
+// drawCodeRow is a row of a block of code: past its bar, a part of a line of the block. A copy of
+// rows takes the line whole again: the wrap left out the blanks of lead before what the row shows,
+// and a row that goes on with the line of the row above joins it.
+type drawCodeRow struct {
+	cont bool
+	lead string
+}
+
+// drawMarkdownCode is drawMarkdownAs with where its blocks of code went.
+func drawMarkdownCode(src string, w int, bangs bool) (out []string, hits []drawBangHit, code []drawCodeBlock) {
 	w = max(1, w)
 	flow := func(spans []drawSpan, first, hang string) {
 		drawn, at := drawFlowBangs(spans, w, first, hang)
@@ -66,21 +90,24 @@ func drawMarkdownAs(src string, w int, bangs bool) (out []string, hits []drawBan
 		line := strings.TrimRight(lines[i], " \r")
 		trimmed := strings.TrimSpace(line)
 		start, from := i, len(out)
+		var rows []drawCodeRow
 		switch {
 		case strings.HasPrefix(trimmed, "```"):
 			lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
 			for i++; i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```"); i++ {
 				if w-2 < 2 { // too narrow to wrap into anything readable
 					out = append(out, styleRule.Render("│ ")+drawFitTrunc(ideview.Highlight(drawClean(lines[i]), lang), w-2))
+					rows = append(rows, drawCodeRow{})
 					continue
 				}
 				// Wrapped at words as the prose is, the bar going on beside each part: cut, a
 				// long line lost its end (a draft to send, a command). The line is highlighted
 				// whole and its colour goes on past the wrap: the rest of a comment or a string
 				// is not code.
-				code := lipgloss.Wrap(ideview.Highlight(drawClean(lines[i]), lang), w-2, "")
-				for part := range strings.SplitSeq(code, "\n") {
-					out = append(out, styleRule.Render("│ ")+drawFit(part, w-2))
+				parts := strings.Split(lipgloss.Wrap(ideview.Highlight(drawClean(lines[i]), lang), w-2, ""), "\n")
+				for k, lead := range drawCodeLeads(drawClean(lines[i]), parts) {
+					out = append(out, styleRule.Render("│ ")+drawFit(parts[k], w-2))
+					rows = append(rows, drawCodeRow{cont: k > 0, lead: lead})
 				}
 			}
 		case trimmed == "":
@@ -113,8 +140,14 @@ func drawMarkdownAs(src string, w int, bangs bool) (out []string, hits []drawBan
 				flow(drawSpansAs(line, styleReply, bangs), "", "")
 			}
 		}
-		if bangs && strings.HasPrefix(trimmed, "```") {
-			if text, ok := drawFenceBang(lines[start+1 : min(i, len(lines))]); ok {
+		if strings.HasPrefix(trimmed, "```") {
+			block := lines[start+1 : min(i, len(lines))]
+			text, ok := drawFenceBang(block)
+			ok = ok && bangs
+			if len(rows) > 0 {
+				code = append(code, drawCodeBlock{from: from, to: len(out), text: drawFenceText(block), rows: rows, bang: ok})
+			}
+			if ok {
 				for y := from; y < len(out); y++ {
 					if rest, ok := strings.CutPrefix(out[y], styleRule.Render("│ ")); ok {
 						out[y] = styleBang.Render("│ ") + rest
@@ -130,7 +163,47 @@ func drawMarkdownAs(src string, w int, bangs bool) (out []string, hits []drawBan
 	for i, l := range out {
 		out[i] = drawTrunc(l, w) // a wide rune cannot be split when w is tiny
 	}
-	return out, hits
+	return out, hits, code
+}
+
+// drawCodeLeads are the blanks of line, as drawClean leaves it, that the wrap into parts left out
+// before each part: where it broke the line, and its indent when it put nothing on the first row.
+// A part that is not as written in line has none.
+func drawCodeLeads(line string, parts []string) []string {
+	leads, at := make([]string, len(parts)), 0
+	for k, p := range parts {
+		shown := strings.TrimRight(ansi.Strip(p), " ")
+		j := strings.Index(line[at:], shown)
+		if j < 0 {
+			continue
+		}
+		if lead := line[at : at+j]; strings.TrimSpace(lead) == "" {
+			leads[k] = lead
+		}
+		at += j + len(shown)
+	}
+	return leads
+}
+
+// drawFenceText is what a fenced block of code holds, for a copy: its lines as written, the blank
+// ones around them trimmed; what the chat cannot show (escape sequences, other controls) goes,
+// and the format characters that reorder or hide what is written (bidirectional controls,
+// zero-width).
+func drawFenceText(block []string) string {
+	text := strings.Map(func(r rune) rune {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			return -1
+		}
+		return drawNoFormat(r)
+	}, ansi.Strip(strings.Join(block, "\n")))
+	lines := strings.Split(text, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // drawFenceBang is the command a fenced block of code holds when its first line that says
@@ -140,13 +213,7 @@ func drawMarkdownAs(src string, w int, bangs bool) (out []string, hits []drawBan
 // A line that starts with a shell's negation ("! grep -q x file") is taken for a command: it
 // cannot be told from one.
 func drawFenceBang(block []string) (string, bool) {
-	text := strings.Map(func(r rune) rune {
-		if r != '\n' && r != '\t' && unicode.IsControl(r) {
-			return -1
-		}
-		return drawNoFormat(r)
-	}, ansi.Strip(strings.Join(block, "\n")))
-	text = strings.TrimSpace(text)
+	text := strings.TrimSpace(drawFenceText(block))
 	_, ok := bangCommand(text)
 	return text, ok
 }

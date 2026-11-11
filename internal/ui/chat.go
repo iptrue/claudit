@@ -31,8 +31,9 @@ type chatCache struct {
 	width   int
 	entries []ChatEntry // each entry as it was when drawn
 	lines   [][]string
-	marks   []chatMarks // the paths in each entry's lines
-	paths   *pathCheck  // finds them; nil underlines none
+	marks   []chatMarks       // the paths in each entry's lines
+	paths   *pathCheck        // finds them; nil underlines none
+	code    [][]drawCodeBlock // the blocks of code in each entry's lines
 }
 
 // draw returns the lines of entry i, drawing it again only when it changed.
@@ -43,14 +44,25 @@ func (c *chatCache) draw(i int, e ChatEntry, w int) []string {
 	for len(c.entries) <= i {
 		c.entries = append(c.entries, ChatEntry{Kind: -1}) // never equal to a real entry
 		c.lines = append(c.lines, nil)
+		c.code = append(c.code, nil)
 		c.marks = append(c.marks, chatMarks{})
 	}
 	if c.entries[i] != e {
-		c.entries[i], c.lines[i] = e, drawEntry(e, w)
+		c.lines[i], c.code[i] = drawEntryBlocks(e, w)
+		c.entries[i] = e
 		c.marks[i] = chatMarks{raw: c.lines[i]}
 	}
 	c.lines[i] = c.paths.mark(e, &c.marks[i], c.lines[i])
 	return c.lines[i]
+}
+
+// codeOf is the blocks of code in the lines of entry i as draw drew them last, by its index among
+// them.
+func (c *chatCache) codeOf(i int) []drawCodeBlock {
+	if i < 0 || i >= len(c.code) {
+		return nil
+	}
+	return c.code[i]
 }
 
 // drawChatTime is the room at the right of the chat for the time of a message, "  15:04"; a chat
@@ -175,20 +187,11 @@ func drawEntry(e ChatEntry, w int) []string {
 		if strings.TrimSpace(e.Text) == "" {
 			return nil // a text block that has not streamed anything yet
 		}
-		var lines []string
-		if e.Bash {
-			lines = drawStyled(drawDense(drawWrap(e.Text, w-2)), styleBash.Render)
-		} else {
-			lines, _ = drawReply(e.Text, w-2)
+		if !e.Bash {
+			lines, _ := drawEntryBlocks(e, w)
+			return lines
 		}
-		for i, l := range lines {
-			gutter := "  "
-			if i == 0 {
-				gutter = styleReply.Render("› ")
-			}
-			lines[i] = gutter + l
-		}
-		return lines
+		return drawReplyGutter(drawStyled(drawDense(drawWrap(e.Text, w-2)), styleBash.Render))
 	case CommandEntry:
 		if e.Bang != "" {
 			return drawBang(e, w)
@@ -212,18 +215,50 @@ func drawEntry(e ChatEntry, w int) []string {
 // drawReply renders a reply of claude's into lines of at most w cells: markdown, no line blank;
 // with where its "! command"s went.
 func drawReply(text string, w int) ([]string, []drawBangHit) {
-	lines, hits := drawMarkdownBangs(text, w)
-	dense, at := make([]string, 0, len(lines)), make([]int, len(lines)) // at: where each line went
+	lines, hits, _ := drawReplyCode(text, w)
+	return lines, hits
+}
+
+// drawReplyCode is drawReply with where its blocks of code went.
+func drawReplyCode(text string, w int) ([]string, []drawBangHit, []drawCodeBlock) {
+	lines, hits, code := drawMarkdownCode(text, w, true)
+	dense, at := make([]string, 0, len(lines)), make([]int, len(lines)+1) // at: where each line went
 	for i, l := range lines {
 		at[i] = len(dense)
 		if strings.TrimSpace(ansi.Strip(l)) != "" {
 			dense = append(dense, l)
 		}
 	}
+	at[len(lines)] = len(dense)
 	for i := range hits {
 		hits[i].y = at[hits[i].y]
 	}
-	return dense, hits
+	for i := range code { // a block's rows are never blank: the bar is on each
+		code[i].from, code[i].to = at[code[i].from], at[code[i].to]
+	}
+	return dense, hits, code
+}
+
+// drawEntryBlocks is drawEntry with where the blocks of code went among the lines, drawn with
+// them; a reply of claude's has them, not a Bash call's line or a prompt.
+func drawEntryBlocks(e ChatEntry, w int) ([]string, []drawCodeBlock) {
+	if e.Kind != AssistantEntry || e.Bash || strings.TrimSpace(e.Text) == "" {
+		return drawEntry(e, w), nil
+	}
+	lines, _, code := drawReplyCode(e.Text, w-2)
+	return drawReplyGutter(lines), code
+}
+
+// drawReplyGutter puts lines of what claude says after its "›", the rest under it.
+func drawReplyGutter(lines []string) []string {
+	for i, l := range lines {
+		gutter := "  "
+		if i == 0 {
+			gutter = styleReply.Render("› ")
+		}
+		lines[i] = gutter + l
+	}
+	return lines
 }
 
 // drawBangAt is the "! command" of claude's that entry e, drawn w cells wide, shows at cell x of

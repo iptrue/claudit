@@ -25,13 +25,14 @@ type pathOpenedMsg struct {
 
 // pathZone is the chat's zone under, w×h cells, with the paths its entries name on top: a press
 // on one opens it as the button lets go, unless the press starts a selection. Elsewhere, a Bash
-// call's line among them, under takes the press.
-func (m *Model) pathZone(under zone, entries []ChatEntry, w, h int) zone {
+// call's line among them, and where under takes a press itself whatever is there, under takes
+// the press.
+func (m *Model) pathZone(under zone, entries []ChatEntry, w, h int, takes func(x, y int) bool) zone {
 	scroll, z := m.ChatScroll, under
 	z.click = func(x, y int) tea.Cmd {
 		t, ok := chatPathAt(&m.chatLines, entries, w, h, scroll, x, y)
 		switch {
-		case ok:
+		case ok && !takes(x, y):
 			m.PanelFocus = false
 			m.onRelease = func() { m.opening = m.openPath(t) }
 		case under.click != nil:

@@ -129,16 +129,29 @@ func (m *Model) View() tea.View {
 		if m.sel.chat { // its box follows the chat's as the window's height changes
 			m.sel.box = m.chatView.box
 		}
+		// What a click on (x, y) of the chat acts on: a Bash line's call, where it ran; a ! command,
+		// it goes into the prompt; a block of code, it is copied.
+		at := func(x, y int) (call, bang string, block *chatBlock) {
+			if r := shown[y]; r.entry >= 0 {
+				call, bang = entries[r.entry].Call, drawBangAt(entries[r.entry], tw, r.line, x-2)
+				if b, ok := m.chatBlockAt(r); ok {
+					block = &b
+				}
+			}
+			return call, bang, block
+		}
 		m.zones = append(m.zones, zone{y: ideH, w: w, h: chatH, chat: true,
 			click: func(x, y int) tea.Cmd {
-				call, bang := "", "" // a Bash line's: a click shows where it ran; a ! command's: it goes into the prompt
-				if r := shown[y]; r.entry >= 0 {
-					call, bang = entries[r.entry].Call, drawBangAt(entries[r.entry], tw, r.line, x-2)
-				}
-				return m.clickChat(call, bang, o, w, ideH)
+				call, bang, block := at(x, y)
+				return m.clickChat(call, bang, block, o, w, ideH)
 			},
 			text: func(int, int) image.Rectangle { return image.Rect(2+chatTextCol, 0, 2+tw, chatH) }})
-		m.zones = append(m.zones, m.pathZone(m.zones[len(m.zones)-1], entries, w, chatH)) // the paths in it open at a click
+		// The paths in it open at a click, but for one in a ! command or a block of code: the
+		// click takes that whole.
+		m.zones = append(m.zones, m.pathZone(m.zones[len(m.zones)-1], entries, w, chatH, func(x, y int) bool {
+			_, bang, block := at(x, y)
+			return bang != "" || block != nil
+		}))
 	}
 	in, cx := renderInput(&m.Input, w-4, "Ask claude…", m.PanelFocus)
 	var parts []string

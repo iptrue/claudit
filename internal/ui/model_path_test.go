@@ -233,3 +233,42 @@ func TestPathArgsShells(t *testing.T) {
 		t.Errorf("a batch file is refused %q: %v", got, err)
 	}
 }
+
+// A path in a ! command of claude's is no link of its own: a click on it puts the command in the
+// prompt, as a click elsewhere on the command does; one in a block of code copies the block. A
+// path in the prose of the same reply opens as before.
+func TestModelPathInCommand(t *testing.T) {
+	m, ran := modelPathNew(t, nil)
+	root := m.Sim.State().Root
+	for _, p := range []string{"bin/a.sh", "bin/b.sh", "out/c.txt", "out/d.txt"} {
+		chatPathMake(t, root, p)
+	}
+	var copied []string
+	defer func(w func(string) error) { writeClipboard = w }(writeClipboard)
+	writeClipboard = func(s string) error { copied = append(copied, s); return nil }
+	m.Chat = append(m.Chat, ChatEntry{Kind: AssistantEntry,
+		Text: "Run:\n```\n! bash bin/a.sh\n```\nor `! sh bin/b.sh` here; see out/c.txt\n```\ncat out/d.txt\n```"})
+	modelPathSettle(m)
+	if !slices.ContainsFunc(m.chatLines.marks, func(mk chatMarks) bool { return len(mk.links) == 4 }) {
+		t.Fatalf("the paths are not links: %+v", m.chatLines.marks)
+	}
+
+	modelPathClick(t, m, "bin/a.sh")
+	if got := string(m.Input.Text); got != "!bash bin/a.sh" || len(*ran) != 0 {
+		t.Errorf("a path in a ! block: prompt %q, ran %q", got, *ran)
+	}
+	m.Input = Input{}
+	modelPathClick(t, m, "bin/b.sh")
+	if got := string(m.Input.Text); got != "!sh bin/b.sh" || len(*ran) != 0 {
+		t.Errorf("a path in an inline ! command: prompt %q, ran %q", got, *ran)
+	}
+	m.Input = Input{}
+	modelPathClick(t, m, "out/d.txt")
+	if len(*ran) != 0 || !slices.Equal(copied, []string{"cat out/d.txt"}) || len(m.Input.Text) != 0 {
+		t.Errorf("a path in a block of code: ran %q, copied %q, prompt %q", *ran, copied, string(m.Input.Text))
+	}
+	modelPathClick(t, m, "out/c.txt")
+	if len(*ran) != 1 || len(m.Input.Text) != 0 {
+		t.Errorf("a path in the prose: ran %q, prompt %q", *ran, string(m.Input.Text))
+	}
+}
