@@ -530,5 +530,8 @@ func TestTagsStayWhole(t *testing.T) {
 		if rowWith(rows, "4 changes") < 0 {
 			t.Errorf("%d: the tag broke:\n%s", n, strings.Join(rows, "\n"))
 		}
+		if rowWith(rows, "was · now · diff") < 0 {
+			t.Errorf("%d: the switch broke:\n%s", n, strings.Join(rows, "\n"))
+		}
 	}
 }

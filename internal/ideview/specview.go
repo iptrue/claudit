@@ -474,7 +474,7 @@ func (sp *spec) reqTags(s *section, r *requirement, mode string) []span {
 	out := []span{{text: "   ", st: dimStyle}}
 	for k, m := range specModes {
 		if k > 0 {
-			out = append(out, span{text: " · ", st: dimStyle})
+			out = append(out, span{text: "\u00a0·\u00a0", st: dimStyle}) // the switch wraps whole, as a tag does
 		}
 		st := dimStyle
 		if m == mode {
