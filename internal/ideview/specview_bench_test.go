@@ -38,11 +38,22 @@ func BenchmarkSpecView(b *testing.B) {
 			}
 		}
 	}
-	for name, folds := range map[string]Specs{"folded": nil, "open": all} {
+	// the main spec the MODIFIED requirements change: a word of each paragraph, a scenario fewer
+	main := strings.Split(strings.NewReplacer("## ADDED Requirements", "## Other Requirements", "## MODIFIED Requirements", "## Requirements",
+		"The system SHALL слово", "The system SHALL word", "#### Scenario: Scenario 3 of", "#### Scenario: Scenario 7 of").Replace(text), "\n")
+	for name, c := range map[string]struct {
+		folds Specs
+		main  func(string) []string
+	}{"folded": {}, "open": {folds: all}, "diff": {folds: all, main: func(string) []string { return main }}} {
 		b.Run(name, func(b *testing.B) {
 			st := specState()
 			st.Tabs[2].Buf.SetText(text)
-			o := Options{Now: now, Specs: folds, Scroll: Scroll{}, Terms: TermCache{}, SpecRows: SpecCache{}}
+			o := Options{Now: now, Specs: c.folds, Main: c.main, Scroll: Scroll{}, Terms: TermCache{}, SpecRows: SpecCache{}}
+			if Render(st, o, 120, 40); c.main != nil {
+				if n := diffed(o.SpecRows[specFile].doc); n != 23 {
+					b.Fatalf("%d requirements diffed", n)
+				}
+			}
 			b.ReportAllocs()
 			for b.Loop() {
 				Prune(st, o, 120, 40)
@@ -51,4 +62,17 @@ func BenchmarkSpecView(b *testing.B) {
 			}
 		})
 	}
+}
+
+// diffed is how many requirements of sp are compared to the main spec.
+func diffed(sp *spec) int {
+	n := 0
+	for _, s := range sp.sections {
+		for _, r := range s.reqs {
+			if r.diff != nil {
+				n++
+			}
+		}
+	}
+	return n
 }

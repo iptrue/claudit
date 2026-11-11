@@ -47,10 +47,14 @@ type SpecHit struct {
 	Open  bool
 	Key   string // the pane it scrolls; "" for none
 	Back  int    // the pane's scroll
+	Mode  string // the mode a click on the switch of a MODIFIED requirement picks for it; its fold stays
 }
 
 // Fold opens or folds what h is on.
 func (s Specs) Fold(h SpecHit) {
+	if h.Mode != "" {
+		return
+	}
 	if s[h.Path] == nil {
 		s[h.Path] = map[string]bool{}
 	}
@@ -75,31 +79,56 @@ func specKey(path string) string { return "spec:" + path }
 // draws, scrolls and clicks the same spec several times.
 type SpecCache map[string]*specLayout
 
-// specLayout is a spec laid out, and what from: its text, the width and what was open.
+// specLayout is a spec laid out, and what from: its text, the main spec's, the width, what was
+// open and what its MODIFIED requirements showed.
 type specLayout struct {
-	lines []string
-	doc   *spec
-	width int
-	folds map[string]bool
-	rows  []specRow
+	lines, main []string
+	doc         *spec
+	width       int
+	folds       map[string]bool
+	modes       map[string]string
+	rows        []specRow
 }
 
 // laidOut is the spec of tab, of capability, a delta or not, laid out w cells wide with folds
-// open: the last frame's, unless the text, the width or the folds changed.
-func (o Options) laidOut(tab *ide.Tab, capability string, delta bool, folds map[string]bool, w int) *specLayout {
+// open and its MODIFIED requirements in modes, against the main spec a delta modifies: the last
+// frame's, unless the text, the main spec, the width, the folds or the modes changed.
+func (o Options) laidOut(st *ide.State, tab *ide.Tab, capability string, delta bool, folds map[string]bool, modes map[string]string, w int) *specLayout {
+	path, archived := specMain(tab.Path)
+	var main []string
+	if path != "" && !archived {
+		main = o.mainLines(st, path)
+	}
 	l := o.SpecRows[tab.Path]
-	if l == nil || l.doc.delta != delta || !slices.Equal(l.lines, tab.Buf.Lines) {
+	if l == nil || l.doc.delta != delta || !slices.Equal(l.lines, tab.Buf.Lines) || !slices.Equal(l.main, main) {
 		l = &specLayout{doc: parseSpec(tab.Buf.Lines, delta), width: -1}
-		l.doc.capability = capability
+		l.doc.capability, l.doc.archived = capability, archived
+		if main != nil {
+			l.doc.compare(parseSpec(main, false))
+		}
 		if o.SpecRows != nil {
-			l.lines = slices.Clone(tab.Buf.Lines)
+			l.lines, l.main = slices.Clone(tab.Buf.Lines), slices.Clone(main)
 			o.SpecRows[tab.Path] = l
 		}
 	}
-	if l.width != w || !maps.Equal(l.folds, folds) {
-		l.rows, l.width, l.folds = l.doc.layout(folds, w), w, maps.Clone(folds)
+	if l.width != w || !maps.Equal(l.folds, folds) || !maps.Equal(l.modes, modes) {
+		l.rows, l.width, l.folds, l.modes = l.doc.layout(folds, modes, w), w, maps.Clone(folds), maps.Clone(modes)
 	}
 	return l
+}
+
+// mainLines is the text of the main spec at path: the tab's when it is open, else what o.Main
+// reads; nil for none.
+func (o Options) mainLines(st *ide.State, path string) []string {
+	for _, t := range st.Tabs {
+		if t.Path == path && !t.Hex {
+			return t.Buf.Lines
+		}
+	}
+	if o.Main != nil {
+		return o.Main(path)
+	}
+	return nil
 }
 
 // specView is an OpenSpec spec as an editor shows it structured: its rows, and the window on them.
@@ -107,6 +136,7 @@ type specView struct {
 	path      string
 	doc       *spec
 	folds     map[string]bool
+	modes     map[string]string
 	width     int // of the rows
 	rows      []specRow
 	top, last int // the first row shown, and the last it can be
@@ -124,11 +154,11 @@ func structured(st *ide.State, a *ide.Agent, o Options, iw, ih int) *specView {
 	if !ok || editing(st, tab, o) {
 		return nil
 	}
-	l := o.laidOut(tab, capability, delta, o.Specs[tab.Path], textWidth(iw))
+	l := o.laidOut(st, tab, capability, delta, o.Specs[tab.Path], o.Modes[tab.Path], textWidth(iw))
 	if n, _ := l.doc.counts(); n == 0 {
 		return nil
 	}
-	v := &specView{path: tab.Path, doc: l.doc, folds: o.Specs[tab.Path], width: l.width, rows: l.rows}
+	v := &specView{path: tab.Path, doc: l.doc, folds: o.Specs[tab.Path], modes: o.Modes[tab.Path], width: l.width, rows: l.rows}
 	v.last = max(0, len(v.rows)-ih)
 	v.top = scrolled(0, o.Scroll[specKey(tab.Path)], v.last)
 	return v
@@ -189,7 +219,9 @@ type specRow struct {
 	lead           string // styled: the bar, the fold, the indent
 	spans          []span
 	kind           rowKind
-	sec, req, scen int // where in the spec it is; -1 for none
+	sec, req, scen int    // where in the spec it is; -1 for none
+	key            string // a scenario's fold key
+	open           bool   // the scenario is open
 }
 
 // draw is r styled, at most w cells wide.
@@ -197,6 +229,10 @@ func (r specRow) draw(w int) string {
 	var b strings.Builder
 	b.WriteString(r.lead)
 	for _, s := range r.spans {
+		if s.st.GetStrikethrough() { // lipgloss styles a struck run a character at a time
+			b.WriteString(specDelSGR.Styled(s.text))
+			continue
+		}
 		b.WriteString(s.st.Render(s.text))
 	}
 	return truncate(b.String(), w)
@@ -252,6 +288,9 @@ func (b *specLines) add(first, hang string, spans ...span) {
 		if i > 0 {
 			lead = hang
 		}
+		if n := len(row) - 1; n >= 0 && row[n].mark { // a marked run ends at its text
+			row[n].text = strings.TrimRight(row[n].text, " ")
+		}
 		r := b.at
 		r.lead, r.spans = lead, row
 		b.rows = append(b.rows, r)
@@ -264,16 +303,16 @@ var noRow = specRow{sec: -1, req: -1, scen: -1}
 // gap puts a blank row that is what at is, unless there is no row above or the row above is blank.
 func (b *specLines) gap(at specRow) {
 	if n := len(b.rows); n > 0 && !b.rows[n-1].blank() {
-		b.rows = append(b.rows, specRow{kind: at.kind, sec: at.sec, req: at.req, scen: at.scen})
+		b.rows = append(b.rows, specRow{kind: at.kind, sec: at.sec, req: at.req, scen: at.scen, key: at.key, open: at.open})
 	}
 }
 
 // layout lays sp out w cells wide, what is open in folds open.
-func (sp *spec) layout(folds map[string]bool, w int) []specRow {
+func (sp *spec) layout(folds map[string]bool, modes map[string]string, w int) []specRow {
 	b := &specLines{w: max(w, 1), at: noRow}
-	top := []span{{sp.capability, specCapStyle}}
+	top := []span{{text: sp.capability, st: specCapStyle}}
 	if sp.delta {
-		top = append(top, span{"  ·  delta", dimStyle})
+		top = append(top, span{text: "  ·  delta", st: dimStyle})
 	}
 	b.add("", "", top...)
 	b.gap(noRow)
@@ -283,9 +322,9 @@ func (sp *spec) layout(folds map[string]bool, w int) []specRow {
 		c := opColor(s.op)
 		if label := sectionLabel(s); label != "" {
 			b.at = specRow{kind: rowSection, sec: i, req: -1, scen: -1}
-			spans := []span{{" " + label + " ", lipgloss.NewStyle().Background(c).Foreground(theme.Bg).Bold(true)}}
+			spans := []span{{text: " " + label + " ", st: lipgloss.NewStyle().Background(c).Foreground(theme.Bg).Bold(true)}}
 			if s.op != "" || len(s.reqs) > 0 { // a main spec's purpose holds none, as it should
-				spans = append(spans, span{"  " + count(len(s.reqs), "requirement"), dimStyle})
+				spans = append(spans, span{text: "  " + count(len(s.reqs), "requirement"), st: dimStyle})
 			}
 			b.add("", "", spans...)
 			b.gap(noRow)
@@ -294,7 +333,7 @@ func (sp *spec) layout(folds map[string]bool, w int) []specRow {
 		b.blocks(s.text, "", "", "")
 		bar := lipgloss.NewStyle().Foreground(c).Render("▌") + " "
 		for j := range s.reqs {
-			b.requirement(s, i, j, folds, bar)
+			b.requirement(sp, s, i, j, folds, modes, bar)
 		}
 	}
 	for len(b.rows) > 0 && b.rows[len(b.rows)-1].blank() {
@@ -304,38 +343,182 @@ func (sp *spec) layout(folds map[string]bool, w int) []specRow {
 }
 
 // requirement puts requirement j of section s, number i, after bar: its name, and, open, its text
-// and its scenarios.
-func (b *specLines) requirement(s *section, i, j int, folds map[string]bool, bar string) {
+// and its scenarios. A MODIFIED requirement of a delta found in the main spec shows its text
+// there, its own, or what it changed, as modes say, with each scenario's change.
+func (b *specLines) requirement(sp *spec, s *section, i, j int, folds map[string]bool, modes map[string]string, bar string) {
 	r := s.reqs[j]
 	open := reqOpen(folds, s, j)
+	mode := modeOf(modes, r.key)
 	b.at = specRow{kind: rowReq, sec: i, req: j, scen: -1}
 	if open { // the blank row above it is its own: a second click where the first was folds it back
 		b.gap(b.at)
 	}
+	tags := sp.reqTags(s, r, mode)
 	if !open {
-		b.add(bar+dimStyle.Render("▸ "), bar+"  ", span{r.name, specNameStyle},
-			span{"  · " + count(len(r.scenarios), "scenario"), dimStyle})
+		b.add(bar+dimStyle.Render("▸ "), bar+"  ", append([]span{{text: r.name, st: specNameStyle},
+			{text: "  · " + count(len(r.scenarios), "scenario"), st: dimStyle}}, tags...)...)
 		return
 	}
-	b.add(bar+fgStyle.Render("▾ "), bar+"  ", span{r.name, specNameStyle.Bold(true)})
+	b.add(bar+fgStyle.Render("▾ "), bar+"  ", append([]span{{text: r.name, st: specNameStyle.Bold(true)}}, tags...)...)
 	b.at.kind = rowText
-	b.blocks(r.body, bar+"  ", bar, "")
-	if len(r.scenarios) > 0 {
+	d := r.diff
+	switch {
+	case d == nil || mode == ModeNow:
+		b.blocks(r.body, bar+"  ", bar, "")
+	case mode == ModeWas:
+		b.blocks(d.was.body, bar+"  ", bar, "")
+	default:
+		b.diffBlocks(d.body, bar+"  ", bar, "")
+	}
+	scens := plainScenarios(r)
+	if d != nil {
+		scens = d.shown(mode)
+	}
+	if len(scens) > 0 {
 		b.add(bar, bar)
 	}
-	for k, sc := range r.scenarios {
-		b.at = specRow{kind: rowScenario, sec: i, req: j, scen: k}
+	for k, p := range scens {
+		sc := p.now
+		if sc == nil || mode == ModeWas && p.was != nil {
+			sc = p.was
+		}
+		scOpen, set := folds[p.key]
+		if !set {
+			scOpen = d != nil && mode == ModeDiff && p.state == scenNew // what a diff adds shows
+		}
+		b.at = specRow{kind: rowScenario, sec: i, req: j, scen: k, key: p.key, open: scOpen}
 		lead := bar + "  "
-		if !folds[sc.key] {
-			b.add(lead+dimStyle.Render("▸ "), lead+"  ", span{sc.name, fgStyle},
-				span{"  · " + count(sc.stepCount(), "step"), dimStyle})
+		var tag []span
+		if d != nil {
+			tag = []span{scenTag(p.state)}
+		}
+		gone := p.state == scenRemoved && mode == ModeDiff
+		if !scOpen {
+			name := fgStyle
+			if gone {
+				name = specDelStyle
+			}
+			b.add(lead+dimStyle.Render("▸ "), lead+"  ", append([]span{{text: sc.name, st: name},
+				{text: "  · " + count(sc.stepCount(), "step"), st: dimStyle}}, tag...)...)
 			continue
 		}
-		b.add(lead+fgStyle.Render("▾ "), lead+"  ", span{sc.name, specNameStyle})
+		name := specNameStyle
+		if gone {
+			name = specDelStyle
+		}
+		b.add(lead+fgStyle.Render("▾ "), lead+"  ", append([]span{{text: sc.name, st: name}}, tag...)...)
 		b.at.kind = rowText
-		b.blocks(sc.steps, bar+"    ", bar, "       ")
+		if d != nil && mode == ModeDiff && p.state != scenNew {
+			b.diffBlocks(p.steps, bar+"    ", bar, "       ")
+		} else {
+			b.blocks(sc.steps, bar+"    ", bar, "       ")
+		}
 	}
 	b.gap(noRow)
+}
+
+// plainScenarios are the scenarios of r with nothing to compare them to.
+func plainScenarios(r *requirement) []scenPair {
+	out := make([]scenPair, len(r.scenarios))
+	for k, sc := range r.scenarios {
+		out[k] = scenPair{now: sc, key: sc.key}
+	}
+	return out
+}
+
+// shown are the scenarios d shows in mode: the main spec's in was, the delta's in now, both in diff.
+func (d *reqDiff) shown(mode string) []scenPair {
+	if mode == ModeDiff {
+		return d.scens
+	}
+	var out []scenPair
+	for _, p := range d.scens {
+		if mode == ModeWas && p.was != nil || mode == ModeNow && p.now != nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// scenTag is what a scenario of a MODIFIED requirement says of its change.
+func scenTag(st scenState) span {
+	switch st {
+	case scenChanged:
+		return span{text: "  · changed", st: specChgStyle}
+	case scenNew:
+		return span{text: "  · + new", st: specNewStyle}
+	case scenRemoved:
+		return span{text: "  · − removed", st: lipgloss.NewStyle().Foreground(theme.Red)}
+	}
+	return span{text: "  · unchanged", st: dimStyle}
+}
+
+// reqTags is what the header of requirement r of section s says after its name: for a MODIFIED
+// one of a delta, the switch between was, now and diff with mode lit, and how many changes it
+// makes; else why there is nothing to compare.
+func (sp *spec) reqTags(s *section, r *requirement, mode string) []span {
+	switch {
+	case !sp.delta || s.op != "MODIFIED":
+		return nil
+	case sp.archived: // the main spec holds the change already
+		return []span{{text: "  · archived", st: dimStyle}}
+	case r.diff == nil:
+		return []span{{text: "  · not in the main spec", st: dimStyle}}
+	}
+	out := []span{{text: "   ", st: dimStyle}}
+	for k, m := range specModes {
+		if k > 0 {
+			out = append(out, span{text: " · ", st: dimStyle})
+		}
+		st := dimStyle
+		if m == mode {
+			st = specModeOn
+		}
+		out = append(out, span{text: m, st: st, mode: m})
+	}
+	n := span{text: "  · " + count(r.diff.changes, "change"), st: specChgStyle}
+	if r.diff.changes == 0 {
+		n.st = dimStyle
+	}
+	return append(out, n)
+}
+
+// diffBlocks puts the blocks ps pair up as blocks does, each with what it removes struck out and
+// what it adds marked.
+func (b *specLines) diffBlocks(ps []blockPair, lead, sep, pad string) {
+	for i, p := range ps {
+		bl := p.now
+		if bl == nil {
+			bl = p.was
+		}
+		if i > 0 && bl.apart {
+			b.add(sep, sep)
+		}
+		base := specTextStyle
+		switch bl.kind {
+		case blockQuote:
+			base = dimStyle
+		case blockHeading:
+			base = specNameStyle.Bold(true)
+		case blockCode:
+			base = fgStyle
+		}
+		sp := p.diffSpans(base)
+		if bl.kind == blockCode && p.now != nil && p.was != nil && p.now.text != p.was.text { // a line as written: the old above the new
+			b.add(lead+pad, lead+pad, struck([]span{{text: p.was.text, st: base}})...)
+			sp = marked([]span{{text: p.now.text, st: base}})
+		}
+		switch bl.kind {
+		case blockStep:
+			kw := specStepStyle.Render(fmt.Sprintf("%5s", bl.keyword)) + "  "
+			b.add(lead+kw, lead+strings.Repeat(" ", 7), sp...)
+		case blockQuote:
+			gutter := lead + pad[:max(len(pad)-2, 0)] + dimStyle.Render("│ ")
+			b.add(gutter, gutter, sp...)
+		default:
+			b.add(lead+pad, lead+pad, sp...)
+		}
+	}
 }
 
 // blocks puts bs after lead: a step's keyword right-aligned in 5 cells, its text after it; the
@@ -357,7 +540,7 @@ func (b *specLines) blocks(bs []block, lead, sep, pad string) {
 		case blockHeading:
 			b.add(hang, hang, inline(bl.text, specNameStyle.Bold(true))...)
 		case blockCode:
-			b.add(hang, hang, span{bl.text, fgStyle})
+			b.add(hang, hang, span{text: bl.text, st: fgStyle})
 		default:
 			b.add(hang, hang, inline(bl.text, specTextStyle)...)
 		}
@@ -368,6 +551,14 @@ func (b *specLines) blocks(bs []block, lead, sep, pad string) {
 type span struct {
 	text string
 	st   lipgloss.Style
+	mode string // the mode a click on it picks for its requirement: a word of the switch
+	mark bool   // text a diff adds or removes: its background or its strike ends with its text
+}
+
+// with is s with text in place of its own.
+func (s span) with(text string) span {
+	s.text = text
+	return s
 }
 
 // inline splits the text of a spec into runs in base: `code` violet, the normative SHALL and MUST,
@@ -378,10 +569,10 @@ func inline(s string, base lipgloss.Style) []span {
 		t = strings.ReplaceAll(t, "**", "")
 		at := 0
 		for _, m := range specNormRe.FindAllStringIndex(t, -1) {
-			out = append(out, span{t[at:m[0]], base}, span{t[m[0]:m[1]], specNormStyle})
+			out = append(out, span{text: t[at:m[0]], st: base}, span{text: t[m[0]:m[1]], st: specNormStyle})
 			at = m[1]
 		}
-		out = append(out, span{t[at:], base})
+		out = append(out, span{text: t[at:], st: base})
 	}
 	for {
 		i := strings.IndexByte(s, '`')
@@ -394,7 +585,7 @@ func inline(s string, base lipgloss.Style) []span {
 			return out
 		}
 		plain(s[:i])
-		out = append(out, span{s[i+1 : i+1+j], specCodeStyle})
+		out = append(out, span{text: s[i+1 : i+1+j], st: specCodeStyle})
 		s = s[i+2+j:]
 	}
 }
@@ -423,7 +614,7 @@ func flow(spans []span, w int) [][]span {
 				k++
 			}
 			if k != cur && run.Len() > 0 {
-				rows[i] = append(rows[i], span{run.String(), spans[cur].st})
+				rows[i] = append(rows[i], spans[cur].with(run.String()))
 				run.Reset()
 			}
 			cur = k
@@ -431,7 +622,7 @@ func flow(spans []span, w int) [][]span {
 			x += cs[c].w
 		}
 		if run.Len() > 0 {
-			rows[i] = append(rows[i], span{run.String(), spans[cur].st})
+			rows[i] = append(rows[i], spans[cur].with(run.String()))
 		}
 	}
 	return rows

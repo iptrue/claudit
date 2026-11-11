@@ -198,6 +198,7 @@ func (m *Model) clickSwitch() tea.Cmd {
 func (m *Model) clickSpec(h ideview.SpecHit) tea.Cmd {
 	m.PanelFocus = false
 	m.onRelease = func() {
+		m.specModes.Set(h)
 		m.specs.Fold(h)
 		if h.Key != "" {
 			m.scrollIDE(h.Key, h.Back)

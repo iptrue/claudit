@@ -493,7 +493,7 @@ func TestSpecFlow(t *testing.T) {
 		{"averyveryverylongword", 8, []string{"averyver", "yverylon", "gword"}},
 	} {
 		var got []string
-		for _, row := range flow([]span{{tt.text, fgStyle}}, tt.w) {
+		for _, row := range flow([]span{{text: tt.text, st: fgStyle}}, tt.w) {
 			got = append(got, ansi.Strip(specRow{spans: row}.draw(100)))
 		}
 		if !slices.Equal(got, tt.want) {
@@ -501,7 +501,7 @@ func TestSpecFlow(t *testing.T) {
 		}
 	}
 	// Styles carry over a row's break.
-	rows := flow([]span{{"plain ", fgStyle}, {"code code", specCodeStyle}}, 10)
+	rows := flow([]span{{text: "plain ", st: fgStyle}, {text: "code code", st: specCodeStyle}}, 10)
 	if len(rows) != 2 || !styled(specRow{spans: rows[1]}.draw(10), "code", sgr("38", theme.Violet)) {
 		t.Errorf("rows %v", rows)
 	}

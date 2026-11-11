@@ -13,6 +13,7 @@ import (
 type spec struct {
 	capability string // the path between "specs/" and "/spec.md": "auth/login"
 	delta      bool   // a change's spec, not a main one
+	archived   bool   // a delta of a change archived: the main spec holds it already
 	lead       []block
 	sections   []*section
 }
@@ -30,6 +31,7 @@ type requirement struct {
 	key       string // what its fold is kept by: its section's title and its name
 	body      []block
 	scenarios []*scenario
+	diff      *reqDiff // a MODIFIED one against the main spec's of its name; nil for none
 }
 
 type scenario struct {

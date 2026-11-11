@@ -122,6 +122,19 @@ func switchTitle(room int, other string, shown ...string) string {
 	return " " + dimStyle.Render("· "+other) + " "
 }
 
+// modeAt is the mode the word of a switch at cell x of r picks; "" elsewhere.
+func (r specRow) modeAt(x int) string {
+	at := ansi.StringWidth(r.lead)
+	for _, s := range r.spans {
+		w := ansi.StringWidth(s.text)
+		if x >= at && x < at+w {
+			return s.mode
+		}
+		at += w
+	}
+	return ""
+}
+
 // SwitchAt reports whether a click at cell (x, y) of Render(st, o, width, height) falls on the
 // title of the left column while it can show a spec's outline or the files: the click switches.
 func SwitchAt(st *ide.State, o Options, width, height, x, y int) bool {
@@ -144,7 +157,7 @@ func SpecAt(st *ide.State, o Options, width, height, x, y int) (SpecHit, bool) {
 		_, ih := inner(ew, height)
 		rows, _, _, top := v.outline(o, ih)
 		if i := top + y - 1; i < len(rows) && rows[i].req >= 0 {
-			return v.hit(rowReq, rows[i].sec, rows[i].req, -1, true)
+			return v.hit(specRow{kind: rowReq, sec: rows[i].sec, req: rows[i].req, scen: -1}, -1, true)
 		}
 		return SpecHit{}, false
 	}
@@ -157,15 +170,19 @@ func SpecAt(st *ide.State, o Options, width, height, x, y int) (SpecHit, bool) {
 	if v == nil || v.top+y-t.Min.Y-1 >= len(v.rows) {
 		return SpecHit{}, false
 	}
-	r := v.rows[v.top+y-t.Min.Y-1]
-	return v.hit(r.kind, r.sec, r.req, r.scen, false)
+	return v.hit(v.rows[v.top+y-t.Min.Y-1], x-t.Min.X-2, false) // the row starts after a cell of air
 }
 
-// hit is what a click on the row of kind at section sec, requirement req, scenario scen does:
-// it turns the fold the row heads; from the outline, it opens the requirement and brings it to
-// the top of the editor.
-func (v *specView) hit(kind rowKind, sec, req, scen int, outline bool) (SpecHit, bool) {
+// hit is what a click on row r at cell x of it does: on a word of a requirement's switch, it
+// picks that mode; elsewhere it turns the fold the row heads; from the outline, it opens the
+// requirement and brings it to the top of the editor.
+func (v *specView) hit(r specRow, x int, outline bool) (SpecHit, bool) {
 	h := SpecHit{Path: v.path}
+	kind, sec, req := r.kind, r.sec, r.req
+	if m := r.modeAt(x); m != "" && kind == rowReq && !outline {
+		h.Folds, h.Mode = []string{v.doc.sections[sec].reqs[req].key}, m
+		return h, true
+	}
 	switch s := v.doc.sections[max(sec, 0)]; {
 	case kind == rowText:
 		return SpecHit{}, false
@@ -176,8 +193,7 @@ func (v *specView) hit(kind rowKind, sec, req, scen int, outline bool) (SpecHit,
 			h.Open = h.Open || !reqOpen(v.folds, s, j)
 		}
 	case kind == rowScenario:
-		key := s.reqs[req].scenarios[scen].key
-		h.Folds, h.Open = []string{key}, !v.folds[key]
+		h.Folds, h.Open = []string{r.key}, !r.open
 	case outline: // where it is once open: opening it may put a blank row above it
 		key := s.reqs[req].key
 		h.Folds, h.Open, h.Key = []string{key}, true, specKey(v.path)
@@ -186,7 +202,7 @@ func (v *specView) hit(kind rowKind, sec, req, scen int, outline bool) (SpecHit,
 			folds = map[string]bool{}
 		}
 		folds[key] = true
-		for i, r := range v.doc.layout(folds, v.width) {
+		for i, r := range v.doc.layout(folds, v.modes, v.width) {
 			if r.kind == rowReq && r.sec == sec && r.req == req && !r.blank() {
 				h.Back = -i
 				break

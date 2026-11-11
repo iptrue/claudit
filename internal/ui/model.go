@@ -60,6 +60,8 @@ type Model struct {
 	sel        selection         // the text the mouse drags over; View writes what it covers
 	scroll     ideview.Scroll    // how far the wheel scrolled the IDE's panes; View forgets those it no longer draws
 	specs      ideview.Specs     // how the user folded the specs the editor shows structured
+	specModes  ideview.SpecModes // was, now or diff: what each MODIFIED requirement shows, kept as the folds are
+	mains      *mainSpecs        // the main specs the deltas on screen modify, as read from disk
 	specRows   ideview.SpecCache // the specs on screen as laid out, kept by View
 	termCache  ideview.TermCache // wrapped row counts for the visible terminals
 	burst      wheelBurst        // the wheel events Filter held back since the last frame of a scroll
@@ -240,6 +242,8 @@ func New(send func(protocol.Outbound), cwd string, replay bool) *Model {
 		known:     map[string]bool{},
 		scroll:    ideview.Scroll{},
 		specs:     ideview.Specs{},
+		specModes: ideview.SpecModes{},
+		mains:     newMainSpecs(),
 		specRows:  ideview.SpecCache{},
 		termCache: ideview.TermCache{},
 		attached:  map[string]attachment{},

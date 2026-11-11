@@ -79,7 +79,10 @@ func (m *Model) View() tea.View {
 		hints = slices.Insert(slices.Clone(hints), 1, drawHintTab)
 	}
 	o := ideview.Options{Panel: m.Panel, Focused: m.PanelFocus, Sel: m.PanelSel, Now: m.Now, Busy: m.Status.Busy, Wrap: m.Wrap,
-		Raw: m.Raw, Explorer: m.Explorer, Specs: m.specs, SpecRows: m.specRows, Scroll: m.scroll, Terms: m.termCache}
+		Raw: m.Raw, Explorer: m.Explorer, Specs: m.specs, Modes: m.specModes, SpecRows: m.specRows, Scroll: m.scroll, Terms: m.termCache}
+	if m.mains != nil {
+		o.Main = m.mains.lines
+	}
 	if m.inspection != nil {
 		o.Now, o.Busy = m.inspection.frame, m.inspection.busy
 	}
