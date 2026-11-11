@@ -53,10 +53,10 @@ func specMain(path string) (main string, archived bool) {
 	if !ok || !delta {
 		return "", false
 	}
-	p := filepath.ToSlash(path)
-	root := p[:strings.LastIndex("/"+p, "/openspec/")+len("openspec/")] // as specPath finds it
-	archived = strings.HasPrefix(p[len(root):], "changes/archive/")
-	return filepath.FromSlash(root + "specs/" + capability + "/spec.md"), archived
+	q, _ := strings.CutSuffix("/"+filepath.ToSlash(path), "/spec.md") // as specPath finds the root
+	i := strings.LastIndex(q, "/openspec/") + len("/openspec/")
+	archived = strings.HasPrefix(q[i:], "changes/archive/")
+	return filepath.FromSlash(q[1:i] + "specs/" + capability + "/spec.md"), archived
 }
 
 // reqDiff is a MODIFIED requirement of a delta against the requirement of its name in the main
@@ -128,9 +128,19 @@ func diffRequirement(was, now *requirement) *reqDiff {
 	return d
 }
 
-// changes is how many changed runs p holds.
-func (p blockPair) changes() int {
+// whole reports whether p is drawn as the whole old block struck out above the whole new one: the
+// two differ in kind or in a step's keyword, or are lines of code that differ.
+func (p blockPair) whole() bool {
 	if p.was == nil || p.now == nil {
+		return false
+	}
+	return p.was.kind != p.now.kind || p.was.keyword != p.now.keyword ||
+		p.was.kind == blockCode && p.was.text != p.now.text
+}
+
+// changes is how many changed runs p holds; a pair drawn whole is one change.
+func (p blockPair) changes() int {
+	if p.was == nil || p.now == nil || p.whole() {
 		return 1
 	}
 	n := 0
@@ -158,7 +168,12 @@ func pairBlocks(was, now []block) []blockPair {
 			if k < len(came) {
 				p.now = came[k]
 			}
-			if p.was != nil && p.now != nil {
+			switch {
+			case p.whole() && p.was.text != p.now.text: // no words to tell apart
+				p.hunks = []hunk{{del: p.was.text, ins: p.now.text}}
+			case p.whole():
+				p.hunks = []hunk{{eq: p.now.text}}
+			case p.was != nil && p.now != nil:
 				p.hunks = wordDiff(p.was.text, p.now.text)
 			}
 			out = append(out, p)
@@ -230,10 +245,25 @@ func pairScenarios(was, now []*scenario, reqKey string) []scenPair {
 	return out
 }
 
+// lcsCells is the most cells lcs fills in: a pair of sequences that needs more is told apart
+// whole.
+const lcsCells = 1_000_000
+
 // lcs is the edit from a sequence of n to one of m with eq telling equal elements apart: '='
 // for an element both keep, '-' for one of the first only, '+' for one of the second only; what
-// goes before what comes in each change.
+// goes before what comes in each change. Sequences of more than lcsCells cells together are not
+// compared: all of the first goes, then all of the second comes.
 func lcs(n, m int, eq func(i, j int) bool) []byte {
+	if n*m > lcsCells {
+		ops := make([]byte, 0, n+m)
+		for range n {
+			ops = append(ops, '-')
+		}
+		for range m {
+			ops = append(ops, '+')
+		}
+		return ops
+	}
 	l := make([][]int32, n+1)
 	for i := range l {
 		l[i] = make([]int32, m+1)
@@ -274,7 +304,8 @@ func (h hunk) same() bool { return h.del == "" && h.ins == "" }
 var specTokenRe = regexp.MustCompile("`[^`]*`|\\*\\*|[\\p{L}\\p{N}_]+|\\s+|.")
 
 // wordDiff is the change from a to b by words. A short run kept between two changes ("в", ", ")
-// goes into the change, so that it reads as one.
+// goes into the change, so that it reads as one. A change of ** markers and blanks alone is no
+// change: the run is kept as b has it.
 func wordDiff(a, b string) []hunk {
 	if a == b {
 		return []hunk{{eq: a}}
@@ -304,6 +335,18 @@ func wordDiff(a, b string) []hunk {
 			j++
 		}
 	}
+	var kept []hunk
+	for _, h := range hs {
+		if !h.same() && markup(h.del) && markup(h.ins) {
+			h = hunk{eq: h.ins}
+		}
+		if n := len(kept) - 1; n >= 0 && kept[n].same() && h.same() {
+			kept[n].eq += h.eq
+		} else {
+			kept = append(kept, h)
+		}
+	}
+	hs = kept
 	for k := 1; k+1 < len(hs); {
 		if hs[k].same() && !hs[k-1].same() && !hs[k+1].same() && slight(hs[k].eq) {
 			hs[k-1].del += hs[k].eq + hs[k+1].del
@@ -315,6 +358,9 @@ func wordDiff(a, b string) []hunk {
 	}
 	return hs
 }
+
+// markup reports whether s is ** markers and blanks alone, which the view does not draw.
+func markup(s string) bool { return strings.TrimSpace(strings.ReplaceAll(s, "**", "")) == "" }
 
 // slight reports whether a kept run is too short to read as kept between two changes: blanks,
 // punctuation, and one word of two letters at most.

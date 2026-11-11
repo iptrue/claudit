@@ -273,6 +273,12 @@ func count(n int, thing string) string {
 	return strconv.Itoa(n) + " " + thing + "s"
 }
 
+// tagSpan is the span of a tag after a header or a scenario's name: two blanks, a dot, then text. The
+// blanks inside it are no-break spaces, so that a row wraps between tags and not within one.
+func tagSpan(text string, st lipgloss.Style) span {
+	return span{text: "  " + strings.ReplaceAll("· "+text, " ", "\u00a0"), st: st}
+}
+
 // specLines lays a spec out in rows w cells wide.
 type specLines struct {
 	rows []specRow
@@ -354,9 +360,13 @@ func (b *specLines) requirement(sp *spec, s *section, i, j int, folds map[string
 		b.gap(b.at)
 	}
 	tags := sp.reqTags(s, r, mode)
-	if !open {
+	scens := plainScenarios(r)
+	if d := r.diff; d != nil {
+		scens = d.shown(mode)
+	}
+	if !open { // the scenarios it counts are those it lists open
 		b.add(bar+dimStyle.Render("▸ "), bar+"  ", append([]span{{text: r.name, st: specNameStyle},
-			{text: "  · " + count(len(r.scenarios), "scenario"), st: dimStyle}}, tags...)...)
+			tagSpan(count(len(scens), "scenario"), dimStyle)}, tags...)...)
 		return
 	}
 	b.add(bar+fgStyle.Render("▾ "), bar+"  ", append([]span{{text: r.name, st: specNameStyle.Bold(true)}}, tags...)...)
@@ -369,10 +379,6 @@ func (b *specLines) requirement(sp *spec, s *section, i, j int, folds map[string
 		b.blocks(d.was.body, bar+"  ", bar, "")
 	default:
 		b.diffBlocks(d.body, bar+"  ", bar, "")
-	}
-	scens := plainScenarios(r)
-	if d != nil {
-		scens = d.shown(mode)
 	}
 	if len(scens) > 0 {
 		b.add(bar, bar)
@@ -399,7 +405,7 @@ func (b *specLines) requirement(sp *spec, s *section, i, j int, folds map[string
 				name = specDelStyle
 			}
 			b.add(lead+dimStyle.Render("▸ "), lead+"  ", append([]span{{text: sc.name, st: name},
-				{text: "  · " + count(sc.stepCount(), "step"), st: dimStyle}}, tag...)...)
+				tagSpan(count(sc.stepCount(), "step"), dimStyle)}, tag...)...)
 			continue
 		}
 		name := specNameStyle
@@ -444,13 +450,13 @@ func (d *reqDiff) shown(mode string) []scenPair {
 func scenTag(st scenState) span {
 	switch st {
 	case scenChanged:
-		return span{text: "  · changed", st: specChgStyle}
+		return tagSpan("changed", specChgStyle)
 	case scenNew:
-		return span{text: "  · + new", st: specNewStyle}
+		return tagSpan("+ new", specNewStyle)
 	case scenRemoved:
-		return span{text: "  · − removed", st: lipgloss.NewStyle().Foreground(theme.Red)}
+		return tagSpan("− removed", lipgloss.NewStyle().Foreground(theme.Red))
 	}
-	return span{text: "  · unchanged", st: dimStyle}
+	return tagSpan("unchanged", dimStyle)
 }
 
 // reqTags is what the header of requirement r of section s says after its name: for a MODIFIED
@@ -461,9 +467,9 @@ func (sp *spec) reqTags(s *section, r *requirement, mode string) []span {
 	case !sp.delta || s.op != "MODIFIED":
 		return nil
 	case sp.archived: // the main spec holds the change already
-		return []span{{text: "  · archived", st: dimStyle}}
+		return []span{tagSpan("archived", dimStyle)}
 	case r.diff == nil:
-		return []span{{text: "  · not in the main spec", st: dimStyle}}
+		return []span{tagSpan("not in the main spec", dimStyle)}
 	}
 	out := []span{{text: "   ", st: dimStyle}}
 	for k, m := range specModes {
@@ -476,7 +482,7 @@ func (sp *spec) reqTags(s *section, r *requirement, mode string) []span {
 		}
 		out = append(out, span{text: m, st: st, mode: m})
 	}
-	n := span{text: "  · " + count(r.diff.changes, "change"), st: specChgStyle}
+	n := tagSpan(count(r.diff.changes, "change"), specChgStyle)
 	if r.diff.changes == 0 {
 		n.st = dimStyle
 	}
@@ -484,7 +490,8 @@ func (sp *spec) reqTags(s *section, r *requirement, mode string) []span {
 }
 
 // diffBlocks puts the blocks ps pair up as blocks does, each with what it removes struck out and
-// what it adds marked.
+// what it adds marked. A pair that is whole (a line of code, a step whose keyword changed) is the
+// old block as written, struck out, above the new one, marked.
 func (b *specLines) diffBlocks(ps []blockPair, lead, sep, pad string) {
 	for i, p := range ps {
 		bl := p.now
@@ -494,30 +501,49 @@ func (b *specLines) diffBlocks(ps []blockPair, lead, sep, pad string) {
 		if i > 0 && bl.apart {
 			b.add(sep, sep)
 		}
-		base := specTextStyle
-		switch bl.kind {
-		case blockQuote:
-			base = dimStyle
-		case blockHeading:
-			base = specNameStyle.Bold(true)
-		case blockCode:
-			base = fgStyle
+		if p.whole() {
+			b.block(p.was, lead, pad, struck(asWritten(p.was)))
+			b.block(p.now, lead, pad, marked(asWritten(p.now)))
+			continue
 		}
-		sp := p.diffSpans(base)
-		if bl.kind == blockCode && p.now != nil && p.was != nil && p.now.text != p.was.text { // a line as written: the old above the new
-			b.add(lead+pad, lead+pad, struck([]span{{text: p.was.text, st: base}})...)
-			sp = marked([]span{{text: p.now.text, st: base}})
-		}
-		switch bl.kind {
-		case blockStep:
-			kw := specStepStyle.Render(fmt.Sprintf("%5s", bl.keyword)) + "  "
-			b.add(lead+kw, lead+strings.Repeat(" ", 7), sp...)
-		case blockQuote:
-			gutter := lead + pad[:max(len(pad)-2, 0)] + dimStyle.Render("│ ")
-			b.add(gutter, gutter, sp...)
-		default:
-			b.add(lead+pad, lead+pad, sp...)
-		}
+		b.block(bl, lead, pad, p.diffSpans(blockBase(bl.kind)))
+	}
+}
+
+// blockBase is the style of the text of a block of kind.
+func blockBase(kind blockKind) lipgloss.Style {
+	switch kind {
+	case blockQuote:
+		return dimStyle
+	case blockHeading:
+		return specNameStyle.Bold(true)
+	case blockCode:
+		return fgStyle
+	}
+	return specTextStyle
+}
+
+// asWritten is the text of bl in one run per inline style: a line of code as written, the rest as
+// inline sets it.
+func asWritten(bl *block) []span {
+	if bl.kind == blockCode {
+		return []span{{text: bl.text, st: blockBase(bl.kind)}}
+	}
+	return inline(bl.text, blockBase(bl.kind))
+}
+
+// block puts the rows of sp, the text of bl, after lead: a step's keyword in its column, a quote's
+// gutter, or pad.
+func (b *specLines) block(bl *block, lead, pad string, sp []span) {
+	switch bl.kind {
+	case blockStep:
+		kw := specStepStyle.Render(fmt.Sprintf("%5s", bl.keyword)) + "  "
+		b.add(lead+kw, lead+strings.Repeat(" ", 7), sp...)
+	case blockQuote:
+		gutter := lead + pad[:max(len(pad)-2, 0)] + dimStyle.Render("│ ")
+		b.add(gutter, gutter, sp...)
+	default:
+		b.add(lead+pad, lead+pad, sp...)
 	}
 }
 

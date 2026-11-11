@@ -1,11 +1,10 @@
 package ideview
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pixelbender/claudit/internal/ide"
 	"github.com/pixelbender/claudit/internal/theme"
@@ -166,17 +165,20 @@ func TestPairScenarios(t *testing.T) {
 	}
 }
 
-// A delta's path names the main spec it modifies; an archived change's says so.
+// A delta's path names the main spec it modifies; an archived change's says so. A capability
+// named openspec does not move the root.
 func TestSpecMainPath(t *testing.T) {
 	for path, want := range map[string][2]string{
 		"/r/openspec/changes/add-x/specs/auth/login/spec.md":          {"/r/openspec/specs/auth/login/spec.md", ""},
 		"/r/openspec/changes/archive/2026-01-02-x/specs/auth/spec.md": {"/r/openspec/specs/auth/spec.md", "archived"},
 		"openspec/changes/add-x/specs/auth/spec.md":                   {"openspec/specs/auth/spec.md", ""},
+		"/r/openspec/changes/x/specs/tools/openspec/spec.md":          {"/r/openspec/specs/tools/openspec/spec.md", ""},
+		"/r/openspec/changes/archive/2026-x/specs/openspec/spec.md":   {"/r/openspec/specs/openspec/spec.md", "archived"},
 		"/r/openspec/specs/auth/spec.md":                              {"", ""},
 		"/r/docs/spec.md":                                             {"", ""},
 	} {
-		main, archived := specMain(path)
-		if a := map[bool]string{true: "archived"}[archived]; main != want[0] || a != want[1] {
+		main, archived := specMain(filepath.FromSlash(path))
+		if a := map[bool]string{true: "archived"}[archived]; main != filepath.FromSlash(want[0]) || a != want[1] {
 			t.Errorf("%s: %q %v", path, main, archived)
 		}
 	}
@@ -188,7 +190,7 @@ func TestSpecDiffView(t *testing.T) {
 	reads := 0
 	st, o := diffState(diffMain, &reads)
 	out := Render(st, o, 120, 40)
-	rows := strings.Split(ansi.Strip(out), "\n")
+	rows := strings.Split(plainText(out), "\n")
 	for _, want := range []string{
 		"▾ Sessions   was · now · diff  · 4 changes",
 		"A session SHALL last an houra day.",
@@ -246,7 +248,7 @@ func TestSpecDiffModes(t *testing.T) {
 	st, o := diffState(diffMain, &reads)
 	o.Modes[specFile] = map[string]string{sessions: ModeWas}
 	out := Render(st, o, 120, 40)
-	rows := strings.Split(ansi.Strip(out), "\n")
+	rows := strings.Split(plainText(out), "\n")
 	for _, want := range []string{"A session SHALL last an hour.", "▸ Expiry  · 2 steps  · changed", "▸ Remember  · 2 steps  · − removed",
 		"▸ Logout  · 2 steps  · unchanged", "· 4 changes"} {
 		if rowWith(rows, want) < 0 {
@@ -258,7 +260,7 @@ func TestSpecDiffModes(t *testing.T) {
 	}
 	o.Modes[specFile][sessions] = ModeNow
 	out = Render(st, o, 120, 40)
-	rows = strings.Split(ansi.Strip(out), "\n")
+	rows = strings.Split(plainText(out), "\n")
 	for _, want := range []string{"A session SHALL last a day.", "▸ Refresh  · 2 steps  · + new", "▸ Expiry  · 2 steps  · changed", "· 4 changes"} {
 		if rowWith(rows, want) < 0 {
 			t.Errorf("now: no row with %q:\n%s", want, strings.Join(rows, "\n"))
@@ -273,7 +275,7 @@ func TestSpecDiffModes(t *testing.T) {
 	out = Render(st, o, 120, 40)
 	if !styled(out, "an hour", sgr("38", theme.Red), "9") || !styled(out, "a day", sgr("48", theme.AddedBg)) ||
 		!styled(out, "the user ticks remember me", sgr("38", theme.Red), "9") {
-		t.Errorf("opened scenarios are not diffed:\n%s", ansi.Strip(out))
+		t.Errorf("opened scenarios are not diffed:\n%s", plainText(out))
 	}
 	// a new scenario folds as any other
 	o.Specs[specFile][sessions+"\nRefresh"] = false
@@ -410,6 +412,123 @@ func TestSpecDiffRenderSize(t *testing.T) {
 			for _, s := range [][2]int{{80, 24}, {120, 40}, {170, 52}} {
 				checkSize(t, name, Render(st, o, s[0], s[1]), s[0], s[1])
 			}
+		}
+	}
+}
+
+// A step whose keyword changed, or a block whose kind did, is a change though its text is the same:
+// it is one change, and the scenario is changed.
+func TestKeywordChange(t *testing.T) {
+	step := func(kw, text string) block { return block{kind: blockStep, keyword: kw, text: text} }
+	for name, tt := range map[string]struct{ was, now block }{
+		"keyword": {step("THEN", "it ends"), step("AND", "it ends")},
+		"kind":    {block{kind: blockText, text: "it ends"}, block{kind: blockQuote, text: "it ends"}},
+		"both":    {step("THEN", "it ends"), step("AND", "it ends soon")},
+	} {
+		ps := pairBlocks([]block{tt.was}, []block{tt.now})
+		if len(ps) != 1 || ps[0].was == nil || ps[0].now == nil || ps[0].changes() != 1 || !ps[0].whole() {
+			t.Errorf("%s: %+v", name, ps)
+		}
+	}
+	sc := func(kw string) *scenario {
+		return &scenario{name: "S", key: "r\nS", steps: []block{step("WHEN", "a"), step(kw, "it ends")}}
+	}
+	if ps := pairScenarios([]*scenario{sc("THEN")}, []*scenario{sc("AND")}, "r"); ps[0].state != scenChanged {
+		t.Errorf("state %d", ps[0].state)
+	}
+	if ps := pairScenarios([]*scenario{sc("THEN")}, []*scenario{sc("THEN")}, "r"); ps[0].state != scenSame {
+		t.Errorf("state %d", ps[0].state)
+	}
+}
+
+// A changed keyword shows in the view: the header counts it, the scenario says changed, and the
+// old step is struck out above the new one, marked.
+func TestSpecDiffKeywordView(t *testing.T) {
+	reads := 0
+	st, o := diffState(diffMain, &reads)
+	st.Tabs[2].Buf.SetText(strings.Replace(diffDelta, "- **THEN** the session ends\n\n#### Scenario: Refresh", "- **AND** the session ends\n\n#### Scenario: Refresh", 1))
+	o.Specs[specFile] = map[string]bool{sessions + "\nExpiry": true}
+	out := Render(st, o, 120, 40)
+	rows := strings.Split(plainText(out), "\n")
+	i, j := rowWith(rows, "THEN  the session ends"), rowWith(rows, "AND  the session ends")
+	if i < 0 || j != i+1 || rowWith(rows, "· 4 changes") < 0 {
+		t.Errorf("the old step is not above the new, or the count misses it:\n%s", strings.Join(rows, "\n"))
+	}
+	if !styled(out, "the session ends", sgr("38", theme.Red), "9") || !styled(out, "the session ends", sgr("48", theme.AddedBg)) {
+		t.Errorf("the steps are not struck and marked:\n%q", out)
+	}
+}
+
+// A line of code is told apart whole; a pair of sequences too large to compare is too.
+func TestDiffLargeAndCode(t *testing.T) {
+	code := pairBlocks([]block{{kind: blockCode, text: "a b c"}}, []block{{kind: blockCode, text: "a x c"}})
+	if len(code) != 1 || !reflect.DeepEqual(code[0].hunks, []hunk{{del: "a b c", ins: "a x c"}}) || code[0].changes() != 1 {
+		t.Errorf("code: %+v", code)
+	}
+	a, b := strings.Repeat("a ", 10000), strings.Repeat("b ", 10000) // 20000 tokens each
+	if got := wordDiff(a, b); !reflect.DeepEqual(got, []hunk{{del: a, ins: b}}) {
+		t.Errorf("a large pair: %d hunks", len(got))
+	}
+	ops := lcs(2000, 2000, func(i, j int) bool { return i == j })
+	if len(ops) != 4000 || ops[0] != '-' || ops[2000] != '+' {
+		t.Errorf("a large lcs: %d ops", len(ops))
+	}
+}
+
+// A change of ** markers alone is no change and leaves nothing marked.
+func TestMarkupIsNoChange(t *testing.T) {
+	for _, tt := range []struct{ a, b string }{
+		{"banner", "**banner**"}, {"**banner** here", "banner here"}, {"a  b", "a b"},
+	} {
+		ps := pairBlocks([]block{{text: tt.a}}, []block{{text: tt.b}})
+		if len(ps) != 1 || ps[0].changes() != 0 {
+			t.Errorf("%q → %q: %+v", tt.a, tt.b, ps)
+			continue
+		}
+		drawn := ""
+		for _, sp := range ps[0].diffSpans(specTextStyle) {
+			if sp.mark {
+				t.Errorf("%q → %q: marked %q", tt.a, tt.b, sp.text)
+			}
+			drawn += sp.text
+		}
+		if want := strings.ReplaceAll(tt.b, "**", ""); drawn != want {
+			t.Errorf("%q → %q: draws %q", tt.a, tt.b, drawn)
+		}
+	}
+	if got := wordDiff("**old** word", "**new** word"); !reflect.DeepEqual(got, []hunk{{eq: "**"}, {del: "old", ins: "new"}, {eq: "** word"}}) {
+		t.Errorf("a real change: %q", got)
+	}
+}
+
+// The header of a folded requirement counts the scenarios its mode lists: the main spec's in was,
+// the delta's in now, all in diff.
+func TestFoldedScenarioCount(t *testing.T) {
+	reads := 0
+	st, o := diffState(diffMain, &reads)
+	st.Tabs[2].Buf.SetText(strings.Replace(diffDelta, "### Requirement: Unknown", "#### Scenario: Extra\n- **WHEN** x\n- **THEN** y\n\n### Requirement: Unknown", 1))
+	o.Specs[specFile] = map[string]bool{sessions: false}
+	for mode, want := range map[string]string{ModeWas: "▸ Sessions  · 3 scenarios", ModeNow: "▸ Sessions  · 4 scenarios", ModeDiff: "▸ Sessions  · 5 scenarios"} {
+		o.Modes[specFile] = map[string]string{sessions: mode}
+		if rows := specRender(st, o); rowWith(rows, want) < 0 {
+			t.Errorf("%s: no row with %q:\n%s", mode, want, strings.Join(rows, "\n"))
+		}
+	}
+}
+
+// A tag of a header does not break across rows when the header wraps: it moves to the next row whole.
+func TestTagsStayWhole(t *testing.T) {
+	for n := range 40 {
+		name := "Sessions" + strings.Repeat("x", n)
+		reads := 0
+		st, o := diffState(strings.Replace(diffMain, "Sessions", name, 1), &reads)
+		st.Tabs[2].Buf.SetText(strings.Replace(diffDelta, "Sessions", name, 1))
+		rows := strings.Split(plainText(Render(st, o, 80, 40)), "\n")
+		if rowWith(rows, "Sessions") < 0 {
+			t.Fatalf("no header:\n%s", strings.Join(rows, "\n"))
+		}
+		if rowWith(rows, "4 changes") < 0 {
+			t.Errorf("%d: the tag broke:\n%s", n, strings.Join(rows, "\n"))
 		}
 	}
 }

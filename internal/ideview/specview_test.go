@@ -26,9 +26,13 @@ func specState() *ide.State {
 	return st
 }
 
+// plainText is s with its styles stripped and its no-break spaces, which keep a tag whole when a row
+// wraps, as blanks.
+func plainText(s string) string { return strings.ReplaceAll(ansi.Strip(s), "\u00a0", " ") }
+
 // specRender is the plain rows of the view of st with o, 120×40.
 func specRender(st *ide.State, o Options) []string {
-	return strings.Split(ansi.Strip(Render(st, o, 120, 40)), "\n")
+	return strings.Split(plainText(Render(st, o, 120, 40)), "\n")
 }
 
 // rowWith is the index of the first row of rows that contains s; -1 for none.
@@ -41,7 +45,7 @@ func rowWith(rows []string, s string) int {
 func TestSpecView(t *testing.T) {
 	st := specState()
 	out := Render(st, Options{Now: now}, 120, 40)
-	rows := strings.Split(ansi.Strip(out), "\n")
+	rows := strings.Split(plainText(out), "\n")
 	for _, want := range []string{
 		"│ auth/login  ·  delta",
 		" ADDED   2 requirements",
@@ -75,7 +79,7 @@ func TestSpecView(t *testing.T) {
 		!styled(out, " REMOVED ", sgr("48", theme.Red)) || !styled(out, " RENAMED ", sgr("48", theme.Blue)) {
 		t.Error("a badge is not in its section's colour")
 	}
-	if l := lineWith(out, "Logout  · 1"); !styled(l, "▌", sgr("38", theme.Green)) {
+	if l := lineWith(out, "Logout  ·"); !styled(l, "▌", sgr("38", theme.Green)) {
 		t.Errorf("no green bar: %q", l)
 	}
 	if l := lineWith(out, "▾ Sessions"); !styled(l, "▌", sgr("38", theme.Yellow)) {

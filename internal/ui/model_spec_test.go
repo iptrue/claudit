@@ -77,7 +77,11 @@ func modelSpec(t *testing.T, w, h int) (*Model, string) {
 	return m, path
 }
 
-func modelScreen(m *Model) string { return ansi.Strip(m.View().Content) }
+// modelScreen is the screen of m as plain text; the no-break spaces that keep a tag of a spec whole
+// are blanks.
+func modelScreen(m *Model) string {
+	return strings.ReplaceAll(ansi.Strip(m.View().Content), "\u00a0", " ")
+}
 
 // alt+s shows specs as written and back; the help tells.
 func TestModelSpecRawKey(t *testing.T) {
