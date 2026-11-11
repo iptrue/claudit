@@ -25,9 +25,28 @@ func editorPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 		body = splash(iw, ih)
 	} else {
 		body = editorBody(st, cam, tab, o, iw, ih)
-		head = " " + title(st, cam, func(room int) string { return shortPath(tab.Path, st.Root, room) }, iw-3) + " "
+		room, held := iw-3, ""
+		if st.Viewed != "" { // the user's file stays until alt+0: the title says so
+			held = heldLabel(room)
+			room -= lipgloss.Width(held)
+		}
+		head = " " + title(st, cam, func(room int) string { return shortPath(tab.Path, st.Root, room) }, room) + " " + held
 	}
 	return frame(w, h, theme.Border, head, body)
+}
+
+// heldLabel follows the path of a file the user opened in a title of room cells: who opened it and
+// how to go back, or only who, leaving the path a fair share; "" when even that would not.
+func heldLabel(room int) string {
+	const by, back = "opened by you", " · alt+0 back to agent"
+	accent := lipgloss.NewStyle().Foreground(theme.Accent)
+	switch {
+	case room-lipgloss.Width(by+back)-1 >= 24:
+		return accent.Render(by) + dimStyle.Render(back) + " "
+	case room-len(by)-1 >= 12:
+		return accent.Render(by) + " "
+	}
+	return ""
 }
 
 // shownTab is the file the editor shows for agent a: its own, else the last opened; nil for none.

@@ -111,6 +111,12 @@ func (m *Model) wheel(x, y, d int) {
 		p.Cursor = min(max(p.Cursor+d, 0), len(p.Options)-1)
 	case *PluginsPopup:
 		p.Cursor = min(max(p.Cursor+d, 0), max(0, p.rows()-1))
+	case *OpenPopup:
+		if p.Change != nil {
+			p.File = min(max(p.File+d, 0), max(0, len(p.files())-1))
+		} else {
+			p.Cursor = min(max(p.Cursor+d, 0), max(0, len(p.shown)-1))
+		}
 	case nil:
 		switch {
 		case m.ShowHelp:
@@ -285,6 +291,13 @@ func (m *Model) clickPopup(p Popup, at int) tea.Cmd {
 		if !p.Discover {
 			return m.pluginsKey(p, tea.KeyPressMsg{Code: tea.KeyEnter})
 		}
+	case *OpenPopup: // a change shows its files, a file or a spec opens
+		if p.Change != nil {
+			p.File = at
+		} else {
+			p.Cursor = at
+		}
+		return m.openKey(p, tea.KeyPressMsg{Code: tea.KeyEnter})
 	}
 	return nil
 }

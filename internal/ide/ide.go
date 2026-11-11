@@ -27,7 +27,7 @@ type State struct {
 	Agents  []*Agent          // in order of appearance; Agents[0] is the main agent, key "main"
 	Camera  string            // key of the agent the view follows
 	Pinned  bool              // the user pinned the camera; otherwise it follows the action
-	Viewed  string            // a file the user opened from the explorer: it fills the right column for a while
+	Viewed  string            // a file the user opened: it fills the right column until the camera is pinned or set free
 	Touched map[string]string // file path → key of the agent that last worked on it
 	Edited  map[string]bool   // files an agent changed: an Edit or a Write that succeeded
 }

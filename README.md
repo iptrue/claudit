@@ -38,6 +38,13 @@ claudit
 
 Arguments go on to claude, so `claudit --model haiku` works too.
 
+`/open 119816` finds an OpenSpec change or spec by name or card number, or a change by the
+`domain/capability` of one of its deltas, in the copies of a specs repository under the project
+folder, up to three levels down: the changes of your own copies (`specs-DEV-<card>`) first, newest
+edit first, then the others and the main specs, those of the copy on main or master. A file you
+open there, or click in the explorer, stays on screen while the agents work on; alt+0 or esc goes
+back to them.
+
 The rest you'll figure out.
 
 ## Build and test

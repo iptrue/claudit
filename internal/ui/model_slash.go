@@ -18,6 +18,7 @@ var localCommands = []protocol.Command{
 	{Name: "exit", Description: "Quit claudit"},
 	{Name: "export", Description: "Save the conversation to a Markdown file", Hint: "[file]"},
 	{Name: "help", Description: "Keys and glyphs of claudit"},
+	{Name: "open", Description: "Find an OpenSpec change or spec and keep it on screen", Hint: "[name or card]"},
 	{Name: "plugins", Description: "Turn plugins on and off, install and uninstall them", Aliases: []string{"plugin"}},
 	{Name: "quit", Description: "Quit claudit"},
 	{Name: "resume", Description: "Resume a conversation of this project", Hint: "[id or title]"},
@@ -94,6 +95,8 @@ func (m *Model) slashCommand(text, cmd string) (done bool, run tea.Cmd) {
 		return true, m.openPlugins()
 	case cmd == "btw":
 		m.btw(args)
+	case cmd == "open":
+		return true, m.openSpecs(args)
 	case args == "" && m.openPicker(cmd):
 	case cmd == "model" && args != "" && !m.Status.Replay && m.Status.State != "exited":
 		m.setModel(args)

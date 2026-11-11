@@ -423,13 +423,22 @@ func TestTreeAt(t *testing.T) {
 	}
 }
 
-// A file the user opened fills the right column alone, headed by its path only.
+// A file the user opened fills the right column alone, headed by its path and by who opened it and
+// how to go back, in as much as the column has room for.
 func TestViewedFile(t *testing.T) {
 	st := multiState()
 	st.Viewed = root + "/README.md"
 	top := strings.Split(ansi.Strip(render(st, 160, 30)), "\n")[0]
-	if strings.Count(top, "╭") != 2 || !strings.Contains(top, "╭─ README.md ─") {
+	if strings.Count(top, "╭") != 2 || !strings.Contains(top, "╭─ README.md opened by you · alt+0 back to agent ─") {
 		t.Errorf("right column is not the viewed file alone: %q", top)
+	}
+	for _, c := range []struct {
+		room int
+		want string
+	}{{60, "opened by you · alt+0 back to agent "}, {59, "opened by you "}, {26, "opened by you "}, {25, ""}} {
+		if got := ansi.Strip(heldLabel(c.room)); got != c.want {
+			t.Errorf("room %d: %q, want %q", c.room, got, c.want)
+		}
 	}
 }
 

@@ -81,7 +81,7 @@ func (m *Model) focusPanel() {
 func (m *Model) pinHotkey(n int) {
 	if n == 0 {
 		m.inspection = nil // an explicit return to auto-follow does not wait for the cooldown
-		m.Sim.Pin("")
+		m.pin("")
 		return
 	}
 	for _, a := range m.ideState().Agents {

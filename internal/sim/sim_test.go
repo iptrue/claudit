@@ -899,8 +899,9 @@ func TestSetRoot(t *testing.T) {
 	}
 }
 
-// View puts a file the user clicked in the right column as it is on disk, until an agent's next
-// call plays or the camera is pinned; a binary file as a hex dump, a missing one not at all.
+// View puts a file the user clicked in the right column as it is on disk, until the camera is
+// pinned or set free, however the agents work on; a binary file as a hex dump, a missing one not
+// at all.
 func TestView(t *testing.T) {
 	s, root := setup(t, map[string]string{"a.go": "package a\n", "b.bin": "x\x00y"})
 	st, path, bin := s.State(), filepath.Join(root, "a.go"), filepath.Join(root, "b.bin")
@@ -920,8 +921,192 @@ func TestView(t *testing.T) {
 	}
 	s.View(path)
 	s.ToolUse("main", "c1", "Bash", map[string]any{"command": "ls"})
-	if s.Tick(t0); st.Viewed != "" {
-		t.Fatal("the agent's next call left the file on screen")
+	if s.Tick(t0); st.Viewed != path || s.FindAgent("main").Activity != "$ ls" {
+		t.Fatalf("the agent's next call: viewed %q, main %q", st.Viewed, s.FindAgent("main").Activity)
+	}
+	s.Pin("main")
+	if st.Viewed != "" || !st.Pinned {
+		t.Fatal("a pin on an agent left the file on screen")
+	}
+}
+
+// A file the user opened stays in the right column while an agent edits it: the edit shows in it.
+// The explorer unfolds the folders down to it, as a click there would find it.
+func TestViewHeldWhileAgentEdits(t *testing.T) {
+	s, root := setup(t, map[string]string{"deep/er/spec.md": "one\ntwo\n", "other.txt": ""})
+	st, path := s.State(), filepath.Join(root, "deep/er/spec.md")
+	if !s.View(path) || !slices.ContainsFunc(st.Tree, func(r ide.TreeRow) bool { return r.Path == path }) {
+		t.Fatalf("the file is not unfolded in the explorer: %+v", st.Tree)
+	}
+	s.ToolUse("main", "e1", "Edit", editInput(path, "two", "three", false))
+	s.ToolResult("e1", "The file has been updated successfully.", false)
+	ticks := 0
+	play(s, t0, 10*time.Second, func() {
+		if ticks++; ticks == 30 { // claude wrote the file while the scene still selects what it replaces
+			writeFile(t, path, "one\nthree\n")
+			at := t0.Add(time.Hour)
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if ticks < 30 {
+		t.Fatalf("the scene was over after %d ticks, before the file was written", ticks)
+	}
+	if st.Viewed != path || st.FindTab(path).Buf.Text() != "one\nthree\n" {
+		t.Fatalf("viewed %q text %q", st.Viewed, st.FindTab(path).Buf.Text())
+	}
+	s.Pin("")
+	if st.Viewed != "" || st.Pinned {
+		t.Fatal("following the action again left the file on screen")
+	}
+}
+
+// An Edit that adds after what it replaces, written to disk while its scene still walks the explorer
+// to the file the user opened, shows once; so does a Read that waited behind another call while
+// the file changed on disk, and the file as it is now shows once the scenes are over.
+func TestViewHeldBeforeTheSceneComes(t *testing.T) {
+	files := map[string]string{"zz.md": "one\ntwo\n"}
+	for i := range 200 {
+		files[fmt.Sprintf("a%03d.txt", i)] = ""
+	}
+	s, root := setup(t, files)
+	st, path := s.State(), filepath.Join(root, "zz.md")
+	s.View(path)
+	s.Tick(t0)
+	s.ToolUse("main", "e1", "Edit", editInput(path, "two\n", "two\nthree\n", false))
+	s.ToolResult("e1", "The file has been updated successfully.", false)
+	written := false
+	now := play(s, t0.Add(300*time.Millisecond), 10*time.Second, func() {
+		if !written {
+			written = true
+			writeFile(t, path, "one\ntwo\nthree\n")
+			at := t0.Add(time.Hour)
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if got := st.FindTab(path).Buf.Text(); got != "one\ntwo\nthree\n" {
+		t.Fatalf("the edit shows as %q", got)
+	}
+
+	s.ToolUse("main", "b1", "Bash", map[string]any{"command": "make"})
+	s.ToolUse("main", "r1", "Read", map[string]any{"file_path": path})
+	writeFile(t, path, "four\n")
+	at := t0.Add(2 * time.Hour)
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+	now = play(s, now, 2*time.Second, nil) // the Bash waits for its result, the Read behind it
+	if got := st.FindTab(path).Buf.Text(); got != "one\ntwo\nthree\n" {
+		t.Fatalf("read again under the Read to come: %q", got)
+	}
+	s.ToolResult("b1", "", false)
+	s.ToolResult("r1", "one\ntwo\nthree\n", false)
+	now = play(s, now, 10*time.Second, nil)
+	if s.Tick(now.Add(viewEvery)); st.Viewed != path || st.FindTab(path).Buf.Text() != "four\n" {
+		t.Fatalf("after the scenes: viewed %q, %q", st.Viewed, st.FindTab(path).Buf.Text())
+	}
+
+	s.ToolUse("main", "b2", "Bash", map[string]any{"command": "make"})
+	s.ToolUse("main", "w1", "Write", map[string]any{"file_path": path, "content": "five\n"})
+	writeFile(t, path, "five\n")
+	at = t0.Add(3 * time.Hour)
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+	play(s, now.Add(2*viewEvery), 2*time.Second, nil)
+	if got := st.FindTab(path).Buf.Text(); got != "four\n" {
+		t.Fatalf("read again under the Write to come: %q", got)
+	}
+}
+
+// However many files the agents read after it, the file the user opened keeps its tab and stays in
+// the editor.
+func TestViewHeldAmongManyReads(t *testing.T) {
+	files := map[string]string{"held.md": "held\n"}
+	for i := range 12 {
+		files[fmt.Sprintf("r%02d.txt", i)] = "x\n"
+	}
+	s, root := setup(t, files)
+	st, held := s.State(), filepath.Join(root, "held.md")
+	s.View(held)
+	now := t0
+	for i := range 12 {
+		s.ToolUse("main", fmt.Sprint("r", i), "Read", map[string]any{"file_path": filepath.Join(root, fmt.Sprintf("r%02d.txt", i))})
+		s.ToolResult(fmt.Sprint("r", i), "x", false)
+		now = play(s, now, 10*time.Second, nil)
+	}
+	if st.Viewed != held || st.FindTab(held) == nil || len(st.Tabs) > 9 {
+		t.Fatalf("viewed %q, tab %v, %d tabs", st.Viewed, st.FindTab(held) != nil, len(st.Tabs))
+	}
+}
+
+// A file the user opened is read again when it changed on disk some other way than by an agent's
+// Edit or Write, not more often than viewEvery, and not over what an agent is typing in it; a file
+// that is gone lets the view go.
+func TestViewFollowsDisk(t *testing.T) {
+	s, root := setup(t, map[string]string{"a.md": "one\n"})
+	st, path := s.State(), filepath.Join(root, "a.md")
+	s.View(path)
+	later := func(d time.Duration) {
+		at := t0.Add(d)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.Tick(t0); st.FindTab(path).Buf.Text() != "one\n" {
+		t.Fatal("unchanged file read again into something else")
+	}
+	if s.Tick(t0.Add(viewEvery)) {
+		t.Fatal("an unchanged file reported as changed")
+	}
+	writeFile(t, path, "two\nlines\n")
+	later(time.Hour)
+	if s.Tick(t0.Add(3 * viewEvery / 2)); st.FindTab(path).Buf.Text() != "one\n" {
+		t.Fatal("looked at the disk again before viewEvery was up")
+	}
+	if !s.Tick(t0.Add(2*viewEvery)) || st.FindTab(path).Buf.Text() != "two\nlines\n" || st.Viewed != path {
+		t.Fatalf("a changed file not read again: %q viewed %q", st.FindTab(path).Buf.Text(), st.Viewed)
+	}
+	st.FindTab(path).Buf.Modified = true // an agent is typing in it
+	writeFile(t, path, "three\n")
+	later(2 * time.Hour)
+	if s.Tick(t0.Add(3 * viewEvery)); st.FindTab(path).Buf.Text() != "two\nlines\n" || st.Viewed != path {
+		t.Fatalf("the buffer an agent types in was overwritten: %q", st.FindTab(path).Buf.Text())
+	}
+	st.FindTab(path).Buf.Modified = false
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if s.Tick(t0.Add(4 * viewEvery)); st.Viewed != path {
+		t.Fatal("a file missing for one look let go of the view")
+	}
+	writeFile(t, path, "four\n") // a save that replaced the file
+	later(3 * time.Hour)
+	if !s.Tick(t0.Add(5*viewEvery)) || st.Viewed != path || st.FindTab(path).Buf.Text() != "four\n" {
+		t.Fatalf("the file saved anew not read: viewed %q, %q", st.Viewed, st.FindTab(path).Buf.Text())
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if s.Tick(t0.Add(6 * viewEvery)); st.Viewed != path {
+		t.Fatal("the miss before the save still counted")
+	}
+	writeFile(t, path, "four\n") // the same file back, as it was
+	later(3 * time.Hour)
+	if s.Tick(t0.Add(7 * viewEvery)); st.Viewed != path {
+		t.Fatal("the file back as it was let go of the view")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if s.Tick(t0.Add(8 * viewEvery)); st.Viewed != path {
+		t.Fatal("the miss before the file came back still counted")
+	}
+	if !s.Tick(t0.Add(9*viewEvery)) || st.Viewed != "" {
+		t.Fatalf("a file that is gone stays viewed: %q", st.Viewed)
 	}
 }
 

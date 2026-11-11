@@ -54,7 +54,7 @@ func Scrollbars(st *ide.State, o Options, width, height int) []Scrollbar {
 		tree, follow := agentsView(st, camera(st), base, ih)
 		add(agentsPaneKey, left, follow, max(0, len(tree)-ih), ih)
 	} else {
-		add(filesPane, left, scrollTop(treeSel(st, camera(st)), len(st.Tree), ih), max(0, len(st.Tree)-ih), ih)
+		add(filesPane, left, scrollTop(explorerSel(st, camera(st)), len(st.Tree), ih), max(0, len(st.Tree)-ih), ih)
 	}
 	cols := columns(st, camera(st), o, width-ew, height)
 	for i, r := range tiles(len(cols), width-ew, height) {

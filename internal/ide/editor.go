@@ -21,7 +21,7 @@ func (st *State) FindTab(path string) *Tab {
 }
 
 // Open returns the tab of path; a tab that is not open yet starts with text. Beyond 8 tabs the
-// oldest one no agent works in is closed.
+// oldest one no agent works in, and the user does not hold, is closed.
 func (st *State) Open(path, text string) *Tab {
 	if t := st.FindTab(path); t != nil {
 		return t
@@ -38,9 +38,9 @@ func (st *State) Open(path, text string) *Tab {
 	return t
 }
 
-// inUse reports whether an agent works in the file at path.
+// inUse reports whether an agent works in the file at path, or the user opened it and holds it.
 func (st *State) inUse(path string) bool {
-	return slices.ContainsFunc(st.Agents, func(a *Agent) bool { return a.File == path })
+	return st.Viewed != "" && path == st.Viewed || slices.ContainsFunc(st.Agents, func(a *Agent) bool { return a.File == path })
 }
 
 // retitle names tabs by base name, adding the parent directory when two tabs share it.

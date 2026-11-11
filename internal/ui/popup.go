@@ -44,6 +44,8 @@ func drawPopup(p Popup, maxWidth, maxHeight int) (string, []drawHit) {
 		lines, hits = drawPick(p, inner, rows)
 	case *PluginsPopup:
 		lines, hits = drawPlugins(p, inner, rows)
+	case *OpenPopup:
+		lines, hits = drawOpen(p, inner, rows)
 	case *BtwPopup:
 		lines = drawBtw(p, inner, rows)
 	}

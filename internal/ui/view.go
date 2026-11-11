@@ -35,7 +35,8 @@ var (
 	drawHintsPrompt  = []string{"shift+tab mode", "/ commands", "F1 help", "esc x2 quit"}
 	drawHintsBusy    = []string{"shift+tab mode", "F1 help", "esc interrupt"}
 	drawHintsQueued  = []string{"shift+tab mode", "F1 help", "↑ edit queued", "esc interrupt"}
-	drawHintTab      = "tab agents" // after the mode's, while the agents panel is there to go to
+	drawHintTab      = "tab agents"              // after the mode's, while the agents panel is there to go to
+	drawHintHeld     = "alt+0/esc back to agent" // in place of the help's and esc's, while a file the user opened holds the editor
 	drawHintsSuggest = []string{"↑/↓ pick", "tab complete", "enter run", "esc clear"}
 	drawHintsHelp    = []string{"esc close"}
 	drawHintsPanel   = []string{"↑/↓ select", "enter pin", "alt+0 auto", "tab back"}
@@ -95,10 +96,12 @@ func (m *Model) View() tea.View {
 				path, dir := ideview.TreeAt(st, o, w, ideH, x, y)
 				switch {
 				case dir:
+					top := ideview.ExplorerTop(m.ideState(), ideview.Options{Scroll: m.scroll}, m.ideHeight)
 					m.Sim.Toggle(path)
 					if m.inspection != nil {
 						m.inspection.state.Toggle(path)
 					}
+					m.scrollIDE(ideview.ExplorerKeep(m.ideState(), m.ideHeight, top))
 				case path != "":
 					m.viewFile(path)
 				}
@@ -108,6 +111,10 @@ func (m *Model) View() tea.View {
 			text:  func(x, y int) image.Rectangle { return ideview.TextAt(st, o, w, ideH, x, y) }})
 		for _, bar := range bars {
 			m.zones = append(m.zones, m.scrollbarZone(bar))
+		}
+		if i := slices.Index(hints, "F1 help"); i >= 0 && st.Viewed != "" {
+			hints = slices.DeleteFunc(slices.Clone(hints), func(h string) bool { return strings.HasPrefix(h, "esc ") })
+			hints[slices.Index(hints, "F1 help")] = drawHintHeld
 		}
 		if m.PanelFocus {
 			hints = drawHintsPanel

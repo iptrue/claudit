@@ -18,6 +18,9 @@ const (
 	agentsPaneKey = "agents"
 )
 
+// ExplorerPane is the key of the explorer in Scroll.
+const ExplorerPane = filesPane
+
 func fileKey(path string) string  { return "file:" + path }
 func termKey(agent string) string { return "term:" + agent }
 func webKey(agent string) string  { return "web:" + agent }
@@ -59,7 +62,7 @@ func Wheel(st *ide.State, o Options, width, height, x, y, n int) (string, int) {
 		tree, top := agentsView(st, camera(st), base, ih)
 		return agentsPaneKey, step(o.Scroll[agentsPaneKey], n, top-max(0, len(tree)-ih), top)
 	case !ok && o.Panel == Files:
-		top := scrollTop(treeSel(st, camera(st)), len(st.Tree), ih)
+		top := scrollTop(explorerSel(st, camera(st)), len(st.Tree), ih)
 		return filesPane, step(o.Scroll[filesPane], n, top-max(0, len(st.Tree)-ih), top)
 	case !ok:
 		return "", 0
@@ -104,6 +107,40 @@ func Prune(st *ide.State, o Options, width, height int) {
 	}
 	maps.DeleteFunc(o.Scroll, func(k string, _ int) bool { return !shown[k] })
 	maps.DeleteFunc(o.Terms, func(t *ide.Term, _ termLayout) bool { return !terms[t] })
+}
+
+// ExplorerTop is the first row of the explorer of Render(st, o, …, height).
+func ExplorerTop(st *ide.State, o Options, height int) int {
+	_, ih := inner(0, height)
+	return explorerTop(st, o, ih)
+}
+
+// ExplorerScroll is the scroll of the explorer of Render(st, o, …, height) once the user has opened
+// the file at path, which it follows from then on: the one that keeps top, the first row it showed,
+// when the row of path is in sight there, else 0, with the row in the upper third. The pane's key
+// and how far back; "" when path has no row.
+func ExplorerScroll(st *ide.State, height, top int, path string) (string, int) {
+	_, ih := inner(0, height)
+	r := slices.IndexFunc(st.Tree, func(row ide.TreeRow) bool { return row.Path == path })
+	switch {
+	case r < 0:
+		return "", 0
+	case r >= top && r < top+ih:
+		return filesPane, scrollTop(r, len(st.Tree), ih) - top
+	}
+	return filesPane, 0
+}
+
+// ExplorerKeep is the scroll of the explorer of Render(st, o, …, height) that keeps top, the first
+// row it showed before the tree changed under it, while it follows the file the user opened: the
+// pane's key and how far back; "" when it follows an agent, which it goes on doing.
+func ExplorerKeep(st *ide.State, height, top int) (string, int) {
+	_, ih := inner(0, height)
+	r := viewedRow(st)
+	if r < 0 {
+		return "", 0
+	}
+	return filesPane, scrollTop(r, len(st.Tree), ih) - top
 }
 
 // TermScroll is the scroll of agent's terminal in Render(st, o, width, height) that brings the

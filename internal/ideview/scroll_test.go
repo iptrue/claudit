@@ -2,12 +2,14 @@ package ideview
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pixelbender/claudit/internal/ide"
+	"github.com/pixelbender/claudit/internal/theme"
 )
 
 // scrollRows is the plain rows of the view of st with o, 100×20.
@@ -131,5 +133,121 @@ func TestTermScroll(t *testing.T) {
 	main.Focus = ide.Browser // its file beside its browser: no terminal on screen
 	if key, back := TermScroll(st, o, 100, 20, "main", "b1"); key != "" || back != 0 {
 		t.Errorf("no terminal on screen: %q %d", key, back)
+	}
+}
+
+// longTree is the sample state with 40 more files in the explorer.
+func longTree() *ide.State {
+	st := sampleState()
+	for i := range 40 {
+		name := fmt.Sprintf("z%02d.md", i)
+		st.Tree = append(st.Tree, ide.TreeRow{Name: name, Path: root + "/" + name})
+	}
+	return st
+}
+
+// Once the user opened a file the explorer follows its row, not the agent's: the agent moving on to
+// a file far down leaves the row in sight, and the row is the one in focus.
+func TestExplorerFollowsViewed(t *testing.T) {
+	st := longTree()
+	st.Viewed = root + "/README.md" // row 3
+	st.Agents[0].TreeSel = root + "/z39.md"
+	o := Options{Scroll: Scroll{}}
+	if top := ExplorerTop(st, o, 20); top != 0 {
+		t.Errorf("top %d: the explorer follows the agent", top)
+	}
+	rows := scrollRows(st, o)
+	if !slices.ContainsFunc(rows, func(r string) bool { return strings.Contains(r[:min(len(r), 30)], "README.md") }) {
+		t.Errorf("the viewed row is out of sight:\n%s", strings.Join(rows, "\n"))
+	}
+	st.Viewed = ""
+	if top := ExplorerTop(st, o, 20); top == 0 {
+		t.Errorf("top %d: without a viewed file it follows the agent", top)
+	}
+	st.Viewed = root + "/z20.md" // far down: its row is where the view is, in the upper third
+	if top := ExplorerTop(st, o, 20); top != 24-18/3 {
+		t.Errorf("top %d, want the viewed row in the upper third", top)
+	}
+}
+
+// ExplorerScroll keeps the explorer where it was when the file opened is in sight there, and brings
+// it into the upper third when it is not.
+func TestExplorerScroll(t *testing.T) {
+	st := longTree()
+	o := Options{Scroll: Scroll{}}
+	st.Viewed = root + "/README.md"
+	key, back := ExplorerScroll(st, 20, 0, root+"/README.md")
+	o.Scroll[key] = back
+	if top := ExplorerTop(st, o, 20); key != filesPane || top != 0 {
+		t.Errorf("a row in sight: key %q, top %d", key, top)
+	}
+	st.Viewed = root + "/z02.md" // row 6, in sight from the top row 2 on
+	key, back = ExplorerScroll(st, 20, 2, root+"/z02.md")
+	o.Scroll[key] = back
+	if top := ExplorerTop(st, o, 20); key != filesPane || top != 2 {
+		t.Errorf("the top moved to %d, want 2", top)
+	}
+	st.Viewed = root + "/z20.md"
+	key, back = ExplorerScroll(st, 20, 2, root+"/z20.md")
+	if o.Scroll[key] = back; back != 0 || ExplorerTop(st, o, 20) != 24-18/3 {
+		t.Errorf("a row out of sight: back %d, top %d", back, ExplorerTop(st, o, 20))
+	}
+	if key, _ := ExplorerScroll(st, 20, 0, root+"/nowhere"); key != "" {
+		t.Errorf("no row scrolls: %q", key)
+	}
+}
+
+// Once the tree changes under the file the user opened, the explorer keeps its top row; following an
+// agent, it goes on doing that.
+func TestExplorerKeep(t *testing.T) {
+	st := longTree()
+	st.Viewed = root + "/z30.md"
+	o := Options{Scroll: Scroll{}}
+	for _, top := range []int{0, 10, 20} {
+		key, back := ExplorerKeep(st, 20, top)
+		o.Scroll[key] = back
+		if got := ExplorerTop(st, o, 20); key != filesPane || got != top {
+			t.Errorf("top %d, want %d", got, top)
+		}
+	}
+	st.Viewed = ""
+	if key, _ := ExplorerKeep(st, 20, 5); key != "" {
+		t.Errorf("following the agent, the explorer is kept by %q", key)
+	}
+}
+
+// A file the user opened with no row in the explorer, nor any folder of it, leaves the agent's row
+// as dim as with no file opened: the user did not pick that row.
+func TestExplorerViewedWithoutRow(t *testing.T) {
+	st := sampleState()
+	st.Tree = nil
+	for i := range 300 {
+		st.Tree = append(st.Tree, ide.TreeRow{Name: fmt.Sprintf("file%03d.go", i), Path: fmt.Sprintf("/p/file%03d.go", i)})
+	}
+	cam := st.Agents[0]
+	cam.TreeSel, cam.Focus = "/p/file250.go", ide.Editor
+	st.Viewed = "/elsewhere/spec.md"
+	if l := lineWith(render(st, 100, 20), "file250.go"); strings.Contains(l, sgr("48", theme.SelBg)) || !strings.Contains(l, sgr("48", theme.SelBgDim)) {
+		t.Errorf("the agent's row is lit as the user's pick: %q", l)
+	}
+	st.Viewed = "/p/file251.go"
+	if l := lineWith(render(st, 100, 20), "file251.go"); !strings.Contains(l, sgr("48", theme.SelBg)) {
+		t.Errorf("the row of the file opened is not lit: %q", l)
+	}
+}
+
+// When the user folds the folder of the file they opened, the explorer follows the folder's row;
+// with no row of it at all, the agent's.
+func TestExplorerSelFolded(t *testing.T) {
+	st := longTree()
+	st.Agents[0].TreeSel = root + "/z39.md"
+	st.Tree = append(st.Tree, ide.TreeRow{Name: "specs", Path: root + "/specs", Dir: true})
+	st.Viewed = root + "/specs/chats/spec.md"
+	if sel := explorerSel(st, camera(st)); sel != len(st.Tree)-1 {
+		t.Errorf("row %d followed, want the folded folder's %d", sel, len(st.Tree)-1)
+	}
+	st.Viewed = "/elsewhere/spec.md"
+	if sel, want := explorerSel(st, camera(st)), treeSel(st, camera(st)); sel != want || sel < 0 {
+		t.Errorf("row %d followed, want the agent's %d", sel, want)
 	}
 }

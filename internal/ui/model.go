@@ -19,6 +19,7 @@ import (
 	"github.com/pixelbender/claudit/internal/history"
 	"github.com/pixelbender/claudit/internal/ide"
 	"github.com/pixelbender/claudit/internal/ideview"
+	"github.com/pixelbender/claudit/internal/openspec"
 	"github.com/pixelbender/claudit/internal/protocol"
 	"github.com/pixelbender/claudit/internal/sessions"
 	"github.com/pixelbender/claudit/internal/sim"
@@ -60,10 +61,13 @@ type Model struct {
 	termCache  ideview.TermCache // wrapped row counts for the visible terminals
 	burst      wheelBurst        // the wheel events Filter held back since the last frame of a scroll
 	inspection *inspection       // the IDE the user is reading during the interaction cooldown
+	unheld     bool              // the file the user opened let go, the explorer's scroll from its row not yet
 	ideHeight  int               // IDE height in the last frame; -1 before the first frame
 	mouseDown  bool              // a held button protects the view until five seconds after release
 	send       func(protocol.Outbound)
 	queue      []Popup          // requests waiting behind the open popup
+	openIndex  openspec.Index   // what the last search of /open found, shown while the next one runs
+	openGen    int              // the number of the last search of /open: older ones are dropped
 	behind     string           // the state of main while "waiting for you" covers it
 	clock      func() time.Time // the time of agent events; ticks bring their own
 	crew       crew             // what the model tracks about the agents beyond ide.Agent
@@ -168,8 +172,8 @@ type Status struct {
 }
 
 // Popup is a modal question from the agent, *QuestionPopup or *PermissionPopup, or a list the
-// user opened: *ResumePopup of /resume, *PickPopup of /model and the like, *PluginsPopup of /plugins;
-// or *BtwPopup, the answer to /btw.
+// user opened: *ResumePopup of /resume, *PickPopup of /model and the like, *PluginsPopup of /plugins,
+// *OpenPopup of /open; or *BtwPopup, the answer to /btw.
 type Popup interface{ isPopup() }
 
 // QuestionPopup answers an AskUserQuestion call, one question at a time.
@@ -270,6 +274,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pluginsRead(msg)
 	case pluginChangedMsg:
 		cmd = m.pluginChanged(msg)
+	case openScannedMsg:
+		cmd = m.openScanned(msg)
 	case exportedMsg:
 		if msg.err != nil {
 			m.local("Error: /export: " + msg.err.Error())
@@ -780,6 +786,8 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case *PluginsPopup:
 		return m.pluginsKey(p, k)
+	case *OpenPopup:
+		return m.openKey(p, k)
 	case *QuestionPopup:
 		if !m.typing(k) {
 			m.questionKey(p, k)
@@ -853,7 +861,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		}
 	case "esc":
 		switch {
-		case m.ideState().Pinned: // first back to every agent at work: a claude at work goes on
+		case m.ideState().Pinned || m.ideState().Viewed != "": // first back to every agent at work: a claude at work goes on
 			m.pinView("")
 		case m.bangStop(): // a ! command first: claude goes on
 		case m.canInterrupt():

@@ -231,7 +231,9 @@ func (m *Model) dropAgent(key, to string) {
 		b.Hotkey = a.Hotkey
 	}
 	if st.Camera == key && st.Pinned {
+		viewed := st.Viewed
 		m.Sim.Pin(to)
+		st.Viewed = viewed // the file the user opened stays: only who the camera is on changed
 	}
 	if m.PanelSel == key {
 		m.PanelSel = to
@@ -332,7 +334,9 @@ func (m *Model) tick(now time.Time) {
 		}
 	}
 	m.replayAllow(now)
+	held := m.Sim.State().Viewed != ""
 	m.Sim.Tick(now)
+	m.letGo(held)
 	m.Status.Frame = int(now.UnixMilli() / 100)
 }
 

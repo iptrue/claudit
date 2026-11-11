@@ -55,7 +55,7 @@ func TestModelSlashSuggest(t *testing.T) {
 	// Contains matches come after prefix matches; nothing but bare commands complete.
 	m.Input = Input{}
 	modelPress(m, inputTyped("/o")...)
-	if want := []string{"compact", "context", "copy", "doctor", "export", "model"}; !reflect.DeepEqual(modelNames(m.Suggest), want) {
+	if want := []string{"open", "compact", "context", "copy", "doctor", "export", "model"}; !reflect.DeepEqual(modelNames(m.Suggest), want) {
 		t.Errorf("/o: %q", m.Suggest)
 	}
 	m.Input = Input{}
@@ -268,7 +268,7 @@ func TestModelSlashDescriptions(t *testing.T) {
 		{Name: "doctor", Description: "Check the install"},
 	}})
 	modelPress(m, inputTyped("/")...)
-	local := []string{"btw", "copy", "exit", "export", "help", "plugins", "quit", "resume", "status"}
+	local := []string{"btw", "copy", "exit", "export", "help", "open", "plugins", "quit", "resume", "status"}
 	if got, want := modelNames(m.Suggest), slices.Concat([]string{"compact", "doctor"}, local); !reflect.DeepEqual(got, slices.Sorted(slices.Values(want))) {
 		t.Fatalf("suggest %q", got)
 	}

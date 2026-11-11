@@ -124,6 +124,19 @@ func TestTabs(t *testing.T) {
 	}
 }
 
+// A file the user holds open keeps its tab, as one an agent works in does.
+func TestTabsKeepViewed(t *testing.T) {
+	var st State
+	for i := range 8 {
+		st.Open(fmt.Sprintf("/p/f%d", i), "")
+	}
+	st.Viewed = "/p/f0"
+	st.Open("/p/new", "")
+	if len(st.Tabs) != 8 || st.FindTab("/p/f0") == nil || st.FindTab("/p/f1") != nil {
+		t.Fatalf("the oldest tab is the viewed one's: %q", titles(&st))
+	}
+}
+
 func titles(st *State) []string {
 	var out []string
 	for _, tb := range st.Tabs {

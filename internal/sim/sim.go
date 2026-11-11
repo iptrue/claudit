@@ -3,6 +3,7 @@
 package sim
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -25,7 +26,27 @@ type Sim struct {
 	added  int               // agents ever added: the next colour (the ui may drop agents)
 	camAt  time.Time         // when the camera moved to its agent
 	idleAt time.Time         // since when the camera's agent is idle; zero while it is busy
+	viewed fileStamp         // the file in st.Viewed as View last read it
+	seenAt time.Time         // when Tick last looked at that file on disk
+	missed bool              // the last look found no file there
 }
+
+// fileStamp is what tells a file from its earlier self without reading it.
+type fileStamp struct {
+	mod  time.Time
+	size int64
+}
+
+func stampOf(path string) (fileStamp, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}, false
+	}
+	return fileStamp{fi.ModTime(), fi.Size()}, true
+}
+
+// viewEvery is how often Tick looks at the file the user opened for a change on disk.
+const viewEvery = 500 * time.Millisecond
 
 // lane is the work queue of one agent.
 type lane struct {
@@ -45,6 +66,7 @@ type scene struct {
 	steps []step
 	score int          // camera interest of the steps being added
 	buf   *ide.Buffer  // the buffer the scene works on, set by its open step
+	path  string       // the file a Read, Edit or Write is about, from the start
 	res   *result      // the tool result, once it arrives
 	after func(result) // runs when the result arrives after the animation is over
 }
@@ -79,10 +101,23 @@ func (s *Sim) SetRoot(root string) {
 	}
 }
 
-// View shows the file at path alone in the right column, as on disk now, as the user clicked it
-// in the explorer: until an agent's next tool call plays or the camera is pinned. A binary file
-// shows as a hex dump of its head. It reports false for a file it cannot read.
+// View shows the file at path alone in the right column, as on disk now, unfolded in the explorer,
+// as the user clicked it there or opened it with /open: until the camera is pinned or goes back to
+// following the action. The agents work on meanwhile; an edit of theirs to the file shows in it, and
+// so does any other change on disk, within viewEvery of a Tick. A binary file shows as a hex dump
+// of its head. It reports false for a file it cannot read.
 func (s *Sim) View(path string) bool {
+	if !s.load(path) {
+		return false
+	}
+	s.st.Reveal(path)
+	s.st.Viewed = path
+	return true
+}
+
+// load puts the file at path in its tab as it is on disk now, unless an agent is typing in it.
+func (s *Sim) load(path string) bool {
+	stamp, _ := stampOf(path) // before the read: a write after it shows next time
 	text, ok := snapshot(path)
 	hex := false
 	if !ok {
@@ -91,12 +126,55 @@ func (s *Sim) View(path string) bool {
 		}
 		hex = true
 	}
-	if t := s.st.Open(path, text); !t.Buf.Modified { // unless an agent is typing in it
+	if t := s.st.Open(path, text); !t.Buf.Modified {
 		patch(&t.Buf, text)
 		t.Hex = hex
 	}
-	s.st.Viewed = path
+	s.viewed, s.missed = stamp, false
 	return true
+}
+
+// follow reads the file the user opened again when it changed on disk, as of now, looking at most
+// every viewEvery and not while an agent's scene works in it or waits to: the scene shows the file
+// as the tool call had it, and the file is read once the scenes are over if the disk holds
+// something else than when it was read last. A file that cannot be
+// read any more, or is not there two looks in a row, lets go of the view: a save that replaces
+// the file leaves it missing for a moment. It reports whether the view changed.
+func (s *Sim) follow(now time.Time) bool {
+	path := s.st.Viewed
+	if path == "" || !s.seenAt.IsZero() && now.Sub(s.seenAt) < viewEvery || s.worked(path) {
+		return false
+	}
+	s.seenAt = now
+	stamp, ok := stampOf(path)
+	switch {
+	case !ok && !s.missed:
+		s.missed = true
+		return false
+	case !ok:
+	case stamp == s.viewed:
+		s.missed = false
+		return false
+	case s.load(path):
+		return true
+	}
+	s.st.Viewed = ""
+	return true
+}
+
+// worked reports whether a scene an agent plays, or is to play, works in the file at path.
+func (s *Sim) worked(path string) bool {
+	var buf *ide.Buffer
+	if t := s.st.FindTab(path); t != nil {
+		buf = &t.Buf
+	}
+	on := func(sc *scene) bool { return sc.path == path || buf != nil && sc.buf == buf }
+	for _, l := range s.lanes {
+		if l.cur != nil && on(l.cur) || slices.ContainsFunc(l.queue, on) {
+			return true
+		}
+	}
+	return false
 }
 
 // Toggle folds or unfolds a directory in the explorer, as the user clicked it. An agent's next
@@ -179,7 +257,7 @@ func (s *Sim) ToolUse(agent, id, name string, input map[string]any) {
 		return
 	}
 	var build func(*scene)
-	var what string
+	var what, target string
 	switch name {
 	case "Bash":
 		cmd, note := str(input, "command"), str(input, "description")
@@ -211,25 +289,25 @@ func (s *Sim) ToolUse(agent, id, name string, input map[string]any) {
 	case "Read":
 		f := s.file(input)
 		start, limit := max(0, num(input, "offset")-1), num(input, "limit")
-		what = "Read " + filepath.Base(f.path)
+		what, target = "Read "+filepath.Base(f.path), f.path
 		build = func(sc *scene) { s.read(sc, f, start, limit) }
 	case "Edit":
 		f := s.file(input)
 		old, repl := fileText(str(input, "old_string")), fileText(str(input, "new_string"))
 		all, _ := input["replace_all"].(bool)
-		what = "Edit " + filepath.Base(f.path)
+		what, target = "Edit "+filepath.Base(f.path), f.path
 		build = func(sc *scene) { s.edit(sc, f, old, repl, all) }
 	case "Write":
 		f := s.file(input)
 		content := fileText(str(input, "content"))
-		what = "Write " + filepath.Base(f.path)
+		what, target = "Write "+filepath.Base(f.path), f.path
 		build = func(sc *scene) { s.write(sc, f, content) }
 	default:
 		return
 	}
 	l := s.lanes[a]
 	s.seq++
-	sc := &scene{id: id, seq: s.seq, l: l, what: oneLine(what), build: build}
+	sc := &scene{id: id, seq: s.seq, l: l, what: oneLine(what), build: build, path: target}
 	l.queue = append(l.queue, sc)
 	s.calls[id] = sc
 }
@@ -323,7 +401,7 @@ func (s *Sim) Tick(now time.Time) bool {
 			changed = true
 		}
 	}
-	return s.direct(now) || changed
+	return s.direct(now) || s.follow(now) || changed
 }
 
 // advance plays the steps of a lane that are due by now.
@@ -338,7 +416,6 @@ func (s *Sim) advance(l *lane, now time.Time) bool {
 				break
 			}
 			l.cur, l.queue = l.queue[0], l.queue[1:]
-			s.st.Viewed = ""              // the agents' show goes on
 			s.st.MoveOn(l.a.Key, l.clock) // what the last call typed stays lit until now
 			l.cur.build(l.cur)
 			l.a.Activity = l.cur.what

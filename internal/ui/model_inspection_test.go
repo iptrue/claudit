@@ -78,12 +78,16 @@ func TestInspectionFileSurvivesAgentActivity(t *testing.T) {
 			t.Fatalf("agent replaced the inspected file at %v:\n%s", d, got)
 		}
 	}
-	if m.Sim.State().Viewed != "" || m.Sim.FindAgent("main").Focus != ide.Terminal {
-		t.Fatal("protecting the view paused the live simulation")
+	if m.Sim.State().Viewed == "" || m.Sim.FindAgent("main").Focus != ide.Terminal {
+		t.Fatal("protecting the view paused the live simulation, or the agent's call let the file go")
 	}
 	m.Update(tickMsg(modelT0.Add(5 * time.Second)))
-	if got := inspectionTop(m, height); got == before || !strings.Contains(got, "background output") {
-		t.Errorf("automatic view did not resume after five seconds:\n%s", got)
+	if got := inspectionTop(m, height); !strings.Contains(got, "reading line 00") || strings.Contains(got, "background output") {
+		t.Errorf("the file the user clicked gave way after five seconds:\n%s", got)
+	}
+	modelPress(m, inputKey("alt+0"))
+	if got := inspectionTop(m, height); !strings.Contains(got, "background output") {
+		t.Errorf("alt+0 did not go back to the agent:\n%s", got)
 	}
 }
 

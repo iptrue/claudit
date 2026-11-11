@@ -117,11 +117,13 @@ var drawHelpRows = [][2]string{
 	{"y  n", "allow, deny (esc denies too); ↑/↓ pgup/pgdn scroll; or click"},
 	{"", "Camera"},
 	{"alt+1-9", "show an agent alone (or click it; click again or esc for all)"},
-	{"alt+0", "auto camera: follow the action"},
+	{"alt+0", "auto camera: follow the action; also back from a file you opened"},
+	{"click file", "in the explorer, or /open: the file stays on screen while the agents work, until alt+0, esc or alt+1-9"},
 	{"tab", "agents panel while agents work: ↑/↓ select, enter pin"},
 	{"alt+z", "word wrap in the editor on/off"},
 	{"", "Views"},
 	{"F1  /help", "this reference"},
+	{"/open", "find an OpenSpec change or spec by name or card number, under the explorer's folder"},
 	{"ctrl+c", "clear the prompt, interrupt, or quit (twice)"},
 }
 

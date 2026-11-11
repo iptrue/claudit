@@ -168,9 +168,9 @@ func agentColor(a *ide.Agent) color.Color {
 
 func explorerPane(st *ide.State, cam *ide.Agent, o Options, w, h int) []string {
 	iw, ih := inner(w, h)
-	sel, lit := treeSel(st, cam), cam.Focus == ide.Explorer
-	if st.Viewed != "" { // the user's pick while it fills the right column; the scroll stays put
-		sel, lit = slices.IndexFunc(st.Tree, func(r ide.TreeRow) bool { return r.Path == st.Viewed }), true
+	sel, lit := viewedRow(st), true // the user's pick is in focus
+	if sel < 0 {
+		sel, lit = treeSel(st, cam), cam.Focus == ide.Explorer
 	}
 	rows := make([]string, ih)
 	top := explorerTop(st, o, ih)
@@ -232,13 +232,38 @@ func changed(st *ide.State, r ide.TreeRow) bool {
 	return false
 }
 
-// treeSel is the explorer row cam points at; -1 for none.
-// explorerTop is the first row of the tree in an explorer ih rows high: near the camera's
-// selection, or where the user scrolled.
+// explorerTop is the first row of the tree in an explorer ih rows high: near the row the explorer
+// follows, or where the user scrolled.
 func explorerTop(st *ide.State, o Options, ih int) int {
-	return scrolled(scrollTop(treeSel(st, camera(st)), len(st.Tree), ih), o.Scroll[filesPane], max(0, len(st.Tree)-ih))
+	return scrolled(scrollTop(explorerSel(st, camera(st)), len(st.Tree), ih), o.Scroll[filesPane], max(0, len(st.Tree)-ih))
 }
 
+// explorerSel is the explorer row the explorer follows: viewedRow, else the row cam points at; -1
+// for none.
+func explorerSel(st *ide.State, cam *ide.Agent) int {
+	if r := viewedRow(st); r >= 0 {
+		return r
+	}
+	return treeSel(st, cam)
+}
+
+// viewedRow is the explorer row of the file the user opened, which holds the right column, or of
+// the nearest folder of it when the user folded it away; -1 for none.
+func viewedRow(st *ide.State) int {
+	for p := st.Viewed; p != ""; {
+		if r := slices.IndexFunc(st.Tree, func(r ide.TreeRow) bool { return r.Path == p }); r >= 0 {
+			return r
+		}
+		if d := filepath.Dir(p); d != p {
+			p = d
+		} else {
+			p = ""
+		}
+	}
+	return -1
+}
+
+// treeSel is the explorer row cam points at; -1 for none.
 func treeSel(st *ide.State, cam *ide.Agent) int {
 	if cam.TreeSel == "" {
 		return -1
